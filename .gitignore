@@ -1,0 +1,38 @@
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Binaries
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Logs
+*.log
+
+# Private dev docs (not committed)
+docs/dev/
+
+# AI settings
+.claude/
+.goda/
+.goco/
+.gode/
+
+# Temporary files
+tmp/
+
+# macOS
+.DS_Store
+
+# Test / coverage artifacts
+coverage.out
+*.test
+
+# Build cache
+build/
+.cache/
