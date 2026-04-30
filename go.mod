@@ -6,3 +6,5 @@ require (
 	github.com/go-webgpu/goffi v0.5.0
 	golang.org/x/sys v0.43.0
 )
+
+require github.com/godbus/dbus/v5 v5.1.0
