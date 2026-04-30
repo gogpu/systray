@@ -15,6 +15,7 @@
 
 <p align="center">
   <a href="https://github.com/gogpu/systray/actions"><img src="https://github.com/gogpu/systray/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://app.codecov.io/gh/gogpu/systray"><img src="https://codecov.io/gh/gogpu/systray/branch/main/graph/badge.svg" alt="Coverage"></a>
   <a href="https://pkg.go.dev/github.com/gogpu/systray"><img src="https://pkg.go.dev/badge/github.com/gogpu/systray.svg" alt="Go Reference"></a>
   <a href="https://goreportcard.com/report/github.com/gogpu/systray"><img src="https://goreportcard.com/badge/github.com/gogpu/systray" alt="Go Report Card"></a>
   <a href="https://github.com/gogpu/systray/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License"></a>

@@ -205,8 +205,8 @@ var (
 
 // classRegistered tracks whether the window class has been registered.
 var (
-	classOnce sync.Once
-	classErr  error
+	classOnce        sync.Once
+	errClassRegister error
 )
 
 // taskbarCreatedMsg is the registered "TaskbarCreated" message ID.
@@ -240,10 +240,10 @@ func NewPlatformTray(callbacks *Callbacks) PlatformTray {
 // creates a message-only window, and registers the TaskbarCreated message.
 func (t *win32Tray) Create() error {
 	classOnce.Do(func() {
-		classErr = registerTrayWindowClass()
+		errClassRegister = registerTrayWindowClass()
 	})
-	if classErr != nil {
-		return fmt.Errorf("register tray window class: %w", classErr)
+	if errClassRegister != nil {
+		return fmt.Errorf("register tray window class: %w", errClassRegister)
 	}
 
 	hwnd, err := createMessageWindow(t)

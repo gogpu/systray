@@ -23,6 +23,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write  # Required for Codecov OIDC token
 
 jobs:
   # Build verification - Cross-platform
@@ -84,6 +85,17 @@ jobs:
 
     - name: Run tests
       run: go test -v ./...
+
+    - name: Run tests with coverage
+      if: matrix.os == 'ubuntu-latest'
+      run: go test -coverprofile=coverage.out -covermode=atomic ./...
+
+    - name: Upload coverage to Codecov
+      if: matrix.os == 'ubuntu-latest'
+      uses: codecov/codecov-action@v5
+      with:
+        files: coverage.out
+        use_oidc: true
 
   # Linting
   lint:
