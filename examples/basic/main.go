@@ -18,6 +18,10 @@ func main() {
 
 	menu := systray.NewMenu()
 	menu.Add("Hello", func() { fmt.Println("Hello clicked!") })
+	menu.Add("Show Notification", func() {
+		fmt.Println("Sending notification...")
+		tray.ShowNotification("GoGPU", "Hello from systray!")
+	})
 	menu.AddSeparator()
 
 	sub := systray.NewMenu()

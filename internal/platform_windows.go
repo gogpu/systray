@@ -32,8 +32,16 @@ const (
 	nifShovel   = 0x00000080
 )
 
-// NOTIFYICONDATA.dwState / dwStateMask constants are reserved for future use
-// (balloon notifications in iteration 4).
+// NOTIFYICONDATA.dwInfoFlags constants for balloon notification icons.
+const (
+	niifNone    = 0x00000000 // No icon
+	niifInfo    = 0x00000001 // Info icon
+	niifWarning = 0x00000002 // Warning icon
+	niifError   = 0x00000003 // Error icon
+	niifUser    = 0x00000004 // Use hBalloonIcon
+)
+
+// NOTIFYICONDATA.dwState / dwStateMask constants are reserved for future use.
 
 // NOTIFYICON_VERSION_4 enables rich notification area behavior (Vista+):
 // lParam carries the actual event in LOWORD, coordinates in HIWORD of wParam.
@@ -118,6 +126,7 @@ var (
 	procGetMessageW                 = user32.NewProc("GetMessageW")
 	procTranslateMessage            = user32.NewProc("TranslateMessage")
 	procDispatchMessageW            = user32.NewProc("DispatchMessageW")
+	procShellNotifyIconGetRect      = shell32.NewProc("Shell_NotifyIconGetRect")
 )
 
 // msg is the Win32 MSG structure for the message loop.
@@ -169,6 +178,20 @@ type wndClassExW struct {
 // point is the Win32 POINT structure.
 type point struct {
 	x, y int32
+}
+
+// rect is the Win32 RECT structure.
+type rect struct {
+	left, top, right, bottom int32
+}
+
+// notifyIconIdentifier is the NOTIFYICONIDENTIFIER structure
+// for Shell_NotifyIconGetRect (Windows 7+).
+type notifyIconIdentifier struct {
+	cbSize   uint32
+	hWnd     uintptr
+	uID      uint32
+	guidItem [16]byte // GUID, unused (zero)
 }
 
 // trayRegistry maps HWND to tray instance for wndProc routing.
@@ -378,8 +401,51 @@ func (t *win32Tray) SetMenu(menu *Menu) error {
 	return nil
 }
 
-// ShowNotification is a stub for iteration 4 (balloon notifications).
-func (t *win32Tray) ShowNotification(_, _ string) error {
+// ShowNotification displays a balloon notification from the tray icon.
+// Uses Shell_NotifyIconW with NIM_MODIFY and NIF_INFO flag.
+// Title is limited to 63 characters, message to 255 characters (Win32 limits).
+func (t *win32Tray) ShowNotification(title, message string) error {
+	if !t.visible {
+		return fmt.Errorf("tray icon not visible, call Show() first")
+	}
+
+	nid := notifyIconData{
+		cbSize:      uint32(unsafe.Sizeof(notifyIconData{})),
+		hWnd:        t.hwnd,
+		uID:         t.uid,
+		uFlags:      nifInfo,
+		dwInfoFlags: niifInfo,
+	}
+
+	// Copy title to szInfoTitle (max 63 chars + null terminator).
+	if title != "" {
+		titleUTF16, err := windows.UTF16FromString(title)
+		if err == nil {
+			maxLen := len(nid.szInfoTitle) - 1
+			if len(titleUTF16) > maxLen {
+				titleUTF16 = titleUTF16[:maxLen]
+			}
+			copy(nid.szInfoTitle[:], titleUTF16)
+		}
+	}
+
+	// Copy message to szInfo (max 255 chars + null terminator).
+	if message != "" {
+		msgUTF16, err := windows.UTF16FromString(message)
+		if err == nil {
+			maxLen := len(nid.szInfo) - 1
+			if len(msgUTF16) > maxLen {
+				msgUTF16 = msgUTF16[:maxLen]
+			}
+			copy(nid.szInfo[:], msgUTF16)
+		}
+	}
+
+	ret, _, _ := procShellNotifyIconW.Call(nimModify, uintptr(unsafe.Pointer(&nid)))
+	if ret == 0 {
+		return fmt.Errorf("Shell_NotifyIconW NIM_MODIFY (notification) failed")
+	}
+
 	return nil
 }
 
@@ -429,9 +495,36 @@ func (t *win32Tray) Hide() error {
 	return nil
 }
 
-// Bounds returns the tray icon position (not implemented in iteration 2).
+// Bounds returns the tray icon's screen rectangle (x, y, width, height).
+// Uses Shell_NotifyIconGetRect (Windows 7+). Returns (0,0,0,0) if the
+// function is unavailable or the icon position cannot be determined.
 func (t *win32Tray) Bounds() (int, int, int, int) {
-	return 0, 0, 0, 0
+	if !t.visible {
+		return 0, 0, 0, 0
+	}
+
+	// Shell_NotifyIconGetRect may not exist on older systems.
+	if err := procShellNotifyIconGetRect.Find(); err != nil {
+		return 0, 0, 0, 0
+	}
+
+	nii := notifyIconIdentifier{
+		cbSize: uint32(unsafe.Sizeof(notifyIconIdentifier{})),
+		hWnd:   t.hwnd,
+		uID:    t.uid,
+	}
+
+	var r rect
+	ret, _, _ := procShellNotifyIconGetRect.Call(
+		uintptr(unsafe.Pointer(&nii)),
+		uintptr(unsafe.Pointer(&r)),
+	)
+	// Shell_NotifyIconGetRect returns S_OK (0) on success.
+	if ret != 0 {
+		return 0, 0, 0, 0
+	}
+
+	return int(r.left), int(r.top), int(r.right - r.left), int(r.bottom - r.top)
 }
 
 // Run blocks the calling goroutine, pumping the Win32 message loop.

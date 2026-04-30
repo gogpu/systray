@@ -16,10 +16,12 @@ type SystemTray struct {
 // New creates a new system tray icon.
 func New() *SystemTray {
 	t := &SystemTray{}
-	callbacks := &internal.Callbacks{}
-	platform := internal.NewPlatformTray(callbacks)
-	t.impl = internal.NewTray(platform)
-	t.impl.Callbacks = *callbacks
+	t.impl = &internal.Tray{
+		ID: internal.NewTrayID(),
+	}
+	// Pass pointer to impl.Callbacks so platform sees updates from OnClick/OnDoubleClick/OnRightClick.
+	platform := internal.NewPlatformTray(&t.impl.Callbacks)
+	t.impl.Platform = platform
 	if err := platform.Create(); err != nil {
 		return t
 	}
