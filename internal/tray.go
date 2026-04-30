@@ -52,9 +52,19 @@ func (t *Tray) SetDarkModeIcon(png []byte) error {
 	return nil
 }
 
-// SetTemplateIcon stores the macOS template icon.
+// SetTemplateIcon stores the macOS template icon and forwards it to the
+// platform implementation. On macOS, template images are monochrome and the
+// system automatically adjusts their appearance for the current menu bar theme.
+// On other platforms this is a no-op.
 func (t *Tray) SetTemplateIcon(png []byte) {
 	t.TemplateIcon = png
+
+	if setter, ok := t.Platform.(interface{ SetTemplateIcon([]byte) error }); ok {
+		if err := setter.SetTemplateIcon(png); err != nil {
+			// Non-fatal: icon may not render but tray remains functional.
+			_ = err
+		}
+	}
 }
 
 // SetTooltip stores the tooltip and forwards to the platform.
