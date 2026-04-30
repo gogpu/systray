@@ -20,4 +20,5 @@ func (t *linuxTray) ShowNotification(_, _ string) error { return nil }
 func (t *linuxTray) Show() error                        { return nil }
 func (t *linuxTray) Hide() error                        { return nil }
 func (t *linuxTray) Bounds() (int, int, int, int)       { return 0, 0, 0, 0 }
+func (t *linuxTray) Run() error                         { select {} }
 func (t *linuxTray) Destroy()                           {}

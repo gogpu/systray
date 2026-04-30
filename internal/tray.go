@@ -83,6 +83,12 @@ func (t *Tray) Bounds() (x, y, w, h int) {
 	return t.Platform.Bounds()
 }
 
+// Run blocks the calling goroutine, pumping the platform message loop.
+// Returns when Quit() is called or the platform loop exits.
+func (t *Tray) Run() error {
+	return t.Platform.Run()
+}
+
 // Remove destroys the tray icon and releases resources.
 func (t *Tray) Remove() {
 	t.Visible = false

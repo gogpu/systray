@@ -20,4 +20,5 @@ func (t *darwinTray) ShowNotification(_, _ string) error { return nil }
 func (t *darwinTray) Show() error                        { return nil }
 func (t *darwinTray) Hide() error                        { return nil }
 func (t *darwinTray) Bounds() (int, int, int, int)       { return 0, 0, 0, 0 }
+func (t *darwinTray) Run() error                         { select {} }
 func (t *darwinTray) Destroy()                           {}

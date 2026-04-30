@@ -97,6 +97,12 @@ func (t *SystemTray) Hide() *SystemTray {
 	return t
 }
 
+// Run blocks the calling goroutine, pumping the platform message loop.
+// Call from main() after Show(). Returns when Quit() is called.
+func (t *SystemTray) Run() error {
+	return t.impl.Run()
+}
+
 // Remove destroys the tray icon and releases all resources.
 func (t *SystemTray) Remove() {
 	t.impl.Remove()

@@ -115,7 +115,20 @@ var (
 	procDestroyIcon                 = user32.NewProc("DestroyIcon")
 	procGetSystemMetrics            = user32.NewProc("GetSystemMetrics")
 	procChangeWindowMessageFilterEx = user32.NewProc("ChangeWindowMessageFilterEx")
+	procGetMessageW                 = user32.NewProc("GetMessageW")
+	procTranslateMessage            = user32.NewProc("TranslateMessage")
+	procDispatchMessageW            = user32.NewProc("DispatchMessageW")
 )
+
+// msg is the Win32 MSG structure for the message loop.
+type msg struct {
+	hwnd    uintptr
+	message uint32
+	wParam  uintptr
+	lParam  uintptr
+	time    uint32
+	pt      point
+}
 
 // notifyIconData is the Win32 NOTIFYICONDATAW structure (Shell32 v6.0, Vista+).
 // The struct layout must match the C definition exactly for Shell_NotifyIconW.
@@ -419,6 +432,28 @@ func (t *win32Tray) Hide() error {
 // Bounds returns the tray icon position (not implemented in iteration 2).
 func (t *win32Tray) Bounds() (int, int, int, int) {
 	return 0, 0, 0, 0
+}
+
+// Run blocks the calling goroutine, pumping the Win32 message loop.
+// Returns when PostQuitMessage is called (via Quit or WM_DESTROY).
+// All enterprise references (Qt6, getlantern/systray, fyne-io/systray)
+// use GetMessage — 0% CPU when idle, correct WM_QUIT semantics.
+func (t *win32Tray) Run() error {
+	var m msg
+	for {
+		ret, _, err := procGetMessageW.Call(
+			uintptr(unsafe.Pointer(&m)), 0, 0, 0,
+		)
+		switch int32(ret) {
+		case -1:
+			return fmt.Errorf("GetMessage failed: %w", err)
+		case 0:
+			return nil
+		default:
+			_, _, _ = procTranslateMessage.Call(uintptr(unsafe.Pointer(&m)))
+			_, _, _ = procDispatchMessageW.Call(uintptr(unsafe.Pointer(&m)))
+		}
+	}
 }
 
 // Destroy removes the tray icon, destroys the window, and frees resources.
