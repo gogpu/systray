@@ -12,7 +12,10 @@ import (
 )
 
 func main() {
-	icon := generateIcon(22, color.RGBA{R: 0, G: 180, B: 80, A: 255})
+	// Light mode icon: green (visible on light taskbar backgrounds).
+	iconLight := generateIcon(22, color.RGBA{R: 0, G: 180, B: 80, A: 255})
+	// Dark mode icon: bright cyan (visible on dark taskbar backgrounds).
+	iconDark := generateIcon(22, color.RGBA{R: 0, G: 230, B: 230, A: 255})
 
 	tray := systray.New()
 
@@ -37,13 +40,18 @@ func main() {
 		os.Exit(0)
 	})
 
-	tray.SetIcon(icon).SetTooltip("GoGPU Systray Test").SetMenu(menu)
+	tray.SetIcon(iconLight).
+		SetDarkModeIcon(iconDark).
+		SetTooltip("GoGPU Systray Test").
+		SetMenu(menu)
 	tray.OnClick(func() { fmt.Println("Left click!") })
 	tray.OnDoubleClick(func() { fmt.Println("Double click!") })
 	tray.OnRightClick(func() { fmt.Println("Right click!") })
 	tray.Show()
 
-	fmt.Println("Systray running. Right-click the tray icon for menu. Click Quit to exit.")
+	fmt.Println("Systray running. Right-click the tray icon for menu.")
+	fmt.Println("Toggle dark/light mode in Windows Settings to see the icon change.")
+	fmt.Println("Click Quit to exit.")
 	if err := tray.Run(); err != nil {
 		fmt.Println("Run error:", err)
 	}

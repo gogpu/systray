@@ -10,6 +10,7 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
 )
 
 // Win32 Shell_NotifyIconW message constants.
@@ -60,6 +61,7 @@ const (
 	wmNull          = 0x0000
 	wmCommand       = 0x0111
 	wmDestroy       = 0x0002
+	wmSettingChange = 0x001A
 )
 
 // TrackPopupMenu flags.
@@ -219,7 +221,8 @@ type win32Tray struct {
 	hicon    uintptr // current HICON handle
 	hmenu    uintptr // current HMENU handle for context menu
 	visible  bool    // whether icon has been added to tray
-	iconData []byte  // stored PNG for explorer crash recovery
+	iconData []byte  // stored PNG for explorer crash recovery (light mode icon)
+	iconDark []byte  // dark mode icon PNG for automatic theme switching
 	tooltip  string  // stored tooltip for explorer crash recovery
 
 	callbacks *Callbacks
@@ -338,13 +341,39 @@ func createMessageWindow(t *win32Tray) (uintptr, error) {
 }
 
 // SetIcon converts PNG bytes to HICON and updates the tray icon.
+// This sets the light mode (default) icon. If a dark mode icon is also set,
+// the tray automatically switches between them based on the system theme.
 func (t *win32Tray) SetIcon(png []byte) error {
 	if len(png) == 0 {
 		return fmt.Errorf("empty icon data")
 	}
 
-	// Store PNG for explorer crash recovery.
+	// Store PNG for explorer crash recovery and theme switching.
 	t.iconData = png
+
+	return t.applyIcon(png)
+}
+
+// SetDarkModeIcon sets an alternative icon displayed when Windows is in dark mode.
+// If the system is currently in dark mode and the tray is visible, the icon
+// switches immediately.
+func (t *win32Tray) SetDarkModeIcon(png []byte) error {
+	t.iconDark = png
+
+	// If currently in dark mode and visible, switch immediately.
+	if t.visible && len(png) > 0 && isSystemDarkMode() {
+		return t.applyIcon(png)
+	}
+
+	return nil
+}
+
+// applyIcon converts PNG bytes to HICON and sets it as the current tray icon.
+// Reused by SetIcon, SetDarkModeIcon, and theme switching logic.
+func (t *win32Tray) applyIcon(png []byte) error {
+	if len(png) == 0 {
+		return fmt.Errorf("empty icon data")
+	}
 
 	hicon, err := pngToHICON(png)
 	if err != nil {
@@ -450,6 +479,8 @@ func (t *win32Tray) ShowNotification(title, message string) error {
 }
 
 // Show adds the icon to the system tray notification area.
+// If a dark mode icon is set, the initial icon is chosen based on the
+// current system theme (dark or light).
 func (t *win32Tray) Show() error {
 	if t.visible {
 		return nil
@@ -471,6 +502,11 @@ func (t *win32Tray) Show() error {
 	}
 
 	t.visible = true
+
+	// Apply the correct icon for the current system theme.
+	// This handles the case where dark mode icon was set before Show().
+	t.updateIconForTheme()
+
 	return nil
 }
 
@@ -626,14 +662,19 @@ func (t *win32Tray) modifyIcon() error {
 }
 
 // reAddIcon re-creates the tray icon after explorer.exe crash/restart.
+// Selects the correct icon (dark or light) based on the current theme.
 func (t *win32Tray) reAddIcon() {
 	if !t.visible {
 		return
 	}
 
-	// Re-create HICON from stored PNG if needed.
-	if t.hicon == 0 && len(t.iconData) > 0 {
-		hicon, err := pngToHICON(t.iconData)
+	// Re-create HICON from the theme-appropriate stored PNG.
+	if t.hicon == 0 {
+		iconPNG := t.themeIcon()
+		if len(iconPNG) == 0 {
+			return
+		}
+		hicon, err := pngToHICON(iconPNG)
 		if err != nil {
 			slog.Warn("systray: re-create HICON after explorer restart failed", "err", err)
 			return
@@ -773,6 +814,16 @@ func trayWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 		// We use TPM_RETURNCMD, so this is a fallback.
 		return 0
 
+	case wmSettingChange:
+		// Windows broadcasts WM_SETTINGCHANGE with lParam pointing to the
+		// UTF-16 string "ImmersiveColorSet" when the system theme changes
+		// (dark/light mode toggle in Settings > Personalization > Colors).
+		if isImmersiveColorSet(lParam) {
+			t.updateIconForTheme()
+		}
+		ret, _, _ := procDefWindowProcW.Call(hwnd, uintptr(msg), wParam, lParam)
+		return ret
+
 	case wmDestroy:
 		return 0
 
@@ -857,6 +908,87 @@ func (t *win32Tray) showContextMenu() {
 			}
 		}
 	}
+}
+
+// --- Dark/light mode detection ---
+
+// isSystemDarkMode checks the Windows registry to determine if the system
+// is using dark mode. Returns true for dark mode, false for light mode.
+// Reads HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize\SystemUsesLightTheme.
+// Returns false (light mode) if the registry key cannot be read (pre-Windows 10 1809).
+func isSystemDarkMode() bool {
+	key, err := registry.OpenKey(registry.CURRENT_USER,
+		`Software\Microsoft\Windows\CurrentVersion\Themes\Personalize`,
+		registry.QUERY_VALUE)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = key.Close() }()
+
+	val, _, err := key.GetIntegerValue("SystemUsesLightTheme")
+	if err != nil {
+		return false
+	}
+
+	// SystemUsesLightTheme: 0 = dark mode, 1 = light mode.
+	return val == 0
+}
+
+// procLstrcmpiW is the Win32 lstrcmpiW function for case-insensitive
+// null-terminated UTF-16 string comparison. Used to compare the
+// WM_SETTINGCHANGE lParam string without unsafe.Pointer conversion.
+var procLstrcmpiW = kernel32.NewProc("lstrcmpiW")
+
+// immersiveColorSetPtr is a pre-allocated UTF-16 pointer to "ImmersiveColorSet"
+// for comparison in isImmersiveColorSet.
+var immersiveColorSetPtr *uint16
+
+func init() {
+	var err error
+	immersiveColorSetPtr, err = windows.UTF16PtrFromString("ImmersiveColorSet")
+	if err != nil {
+		// This is a compile-time constant string, so this cannot fail.
+		panic("systray: UTF16PtrFromString ImmersiveColorSet: " + err.Error())
+	}
+}
+
+// isImmersiveColorSet checks whether the WM_SETTINGCHANGE lParam points to
+// the UTF-16 string "ImmersiveColorSet", which Windows broadcasts when the
+// system theme (dark/light) changes.
+// Uses lstrcmpiW (kernel32) for comparison to avoid uintptr-to-unsafe.Pointer
+// conversion that go vet flags.
+func isImmersiveColorSet(lParam uintptr) bool {
+	if lParam == 0 {
+		return false
+	}
+
+	// lstrcmpiW returns 0 when strings are equal (case-insensitive).
+	// Both lParam and immersiveColorSetPtr are valid null-terminated UTF-16 pointers.
+	ret, _, _ := procLstrcmpiW.Call(lParam, uintptr(unsafe.Pointer(immersiveColorSetPtr)))
+	return ret == 0
+}
+
+// updateIconForTheme switches the tray icon based on the current system theme.
+// Uses the dark icon in dark mode (if set), otherwise the light (default) icon.
+func (t *win32Tray) updateIconForTheme() {
+	iconPNG := t.themeIcon()
+	if len(iconPNG) == 0 {
+		return
+	}
+
+	if err := t.applyIcon(iconPNG); err != nil {
+		slog.Warn("systray: theme icon switch failed", "dark", isSystemDarkMode(), "err", err)
+	}
+}
+
+// themeIcon returns the appropriate icon PNG for the current system theme.
+// Returns the dark icon if dark mode is active and a dark icon is set,
+// otherwise the light (default) icon.
+func (t *win32Tray) themeIcon() []byte {
+	if isSystemDarkMode() && len(t.iconDark) > 0 {
+		return t.iconDark
+	}
+	return t.iconData
 }
 
 // --- PNG to HICON conversion ---

@@ -39,9 +39,17 @@ func (t *Tray) SetIcon(png []byte) error {
 	return t.Platform.SetIcon(png)
 }
 
-// SetDarkModeIcon stores the dark mode icon variant.
-func (t *Tray) SetDarkModeIcon(png []byte) {
+// SetDarkModeIcon stores the dark mode icon variant and forwards it to the
+// platform implementation. On Windows, this enables automatic icon switching
+// when the system theme changes between dark and light mode.
+func (t *Tray) SetDarkModeIcon(png []byte) error {
 	t.DarkModeIcon = png
+
+	if setter, ok := t.Platform.(interface{ SetDarkModeIcon([]byte) error }); ok {
+		return setter.SetDarkModeIcon(png)
+	}
+
+	return nil
 }
 
 // SetTemplateIcon stores the macOS template icon.
