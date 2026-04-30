@@ -333,7 +333,7 @@ func (t *linuxTray) SetIcon(png []byte) error {
 
 	if t.props != nil {
 		t.props.SetMust(sniInterface, "IconPixmap", t.iconPixmap)
-		if err := t.emitSignal(sniPath, sniInterface+".NewIcon"); err != nil {
+		if err := t.emitSignal(sniInterface + ".NewIcon"); err != nil {
 			slog.Warn("systray: emit NewIcon failed", "err", err)
 		}
 	}
@@ -355,7 +355,7 @@ func (t *linuxTray) SetTooltip(text string) error {
 			Title:    text,
 			Text:     "",
 		})
-		if err := t.emitSignal(sniPath, sniInterface+".NewTitle"); err != nil {
+		if err := t.emitSignal(sniInterface + ".NewTitle"); err != nil {
 			slog.Warn("systray: emit NewTitle failed", "err", err)
 		}
 	}
@@ -431,7 +431,7 @@ func (t *linuxTray) Show() error {
 
 	if t.props != nil {
 		t.props.SetMust(sniInterface, "Status", "Active")
-		if err := t.emitSignal(sniPath, sniInterface+".NewStatus", "Active"); err != nil {
+		if err := t.emitSignal(sniInterface+".NewStatus", "Active"); err != nil {
 			slog.Warn("systray: emit NewStatus failed", "err", err)
 		}
 	}
@@ -447,7 +447,7 @@ func (t *linuxTray) Hide() error {
 
 	if t.props != nil {
 		t.props.SetMust(sniInterface, "Status", "Passive")
-		if err := t.emitSignal(sniPath, sniInterface+".NewStatus", "Passive"); err != nil {
+		if err := t.emitSignal(sniInterface+".NewStatus", "Passive"); err != nil {
 			slog.Warn("systray: emit NewStatus failed", "err", err)
 		}
 	}
@@ -475,7 +475,7 @@ func (t *linuxTray) Destroy() {
 	// Signal Passive status to the DE.
 	if t.conn != nil && t.props != nil {
 		t.props.SetMust(sniInterface, "Status", "Passive")
-		if err := t.emitSignal(sniPath, sniInterface+".NewStatus", "Passive"); err != nil {
+		if err := t.emitSignal(sniInterface+".NewStatus", "Passive"); err != nil {
 			slog.Warn("systray: emit NewStatus (Passive) on destroy failed", "err", err)
 		}
 	}
@@ -498,9 +498,9 @@ func (t *linuxTray) Destroy() {
 	}
 }
 
-// emitSignal is a convenience for emitting a D-Bus signal on the session bus.
-func (t *linuxTray) emitSignal(path dbus.ObjectPath, name string, values ...interface{}) error {
-	return t.conn.Emit(path, name, values...)
+// emitSignal emits a D-Bus signal on the SNI object path.
+func (t *linuxTray) emitSignal(name string, values ...interface{}) error {
+	return t.conn.Emit(sniPath, name, values...)
 }
 
 // --- StatusNotifierItem D-Bus service ---
@@ -573,13 +573,13 @@ type dbusMenuService struct {
 	tray *linuxTray
 }
 
-// GetLayout returns the menu tree starting from parentId.
-func (m *dbusMenuService) GetLayout(parentId int32, recursionDepth int32, propertyNames []string) (uint32, menuLayout, *dbus.Error) {
+// GetLayout returns the menu tree starting from parentID.
+func (m *dbusMenuService) GetLayout(parentID int32, recursionDepth int32, propertyNames []string) (uint32, menuLayout, *dbus.Error) {
 	m.tray.mu.RLock()
 	defer m.tray.mu.RUnlock()
 
 	rev := m.tray.menuRev
-	layout := m.buildLayout(parentId, recursionDepth, 0)
+	layout := m.buildLayout(parentID, recursionDepth, 0)
 
 	return rev, layout, nil
 }
@@ -630,7 +630,7 @@ func (m *dbusMenuService) buildChildren(items []*MenuItem, startID int32, maxDep
 		var subChildren []dbus.Variant
 
 		if item.Type == MenuItemSubmenu && item.Submenu != nil {
-			if maxDepth < 0 || currentDepth < int32(maxDepth) {
+			if maxDepth < 0 || currentDepth < maxDepth {
 				subChildren = m.buildChildren(item.Submenu.Items, nextID, maxDepth, currentDepth+1)
 			}
 			// Advance nextID past all submenu items.
@@ -733,8 +733,8 @@ func (m *dbusMenuService) GetGroupProperties(ids []int32, propertyNames []string
 }
 
 // Event handles a menu item activation event from the DE.
-func (m *dbusMenuService) Event(id int32, eventId string, data dbus.Variant, timestamp uint32) *dbus.Error {
-	if eventId != "clicked" {
+func (m *dbusMenuService) Event(id int32, eventID string, data dbus.Variant, timestamp uint32) *dbus.Error {
+	if eventID != "clicked" {
 		return nil
 	}
 
@@ -801,7 +801,7 @@ func pngToARGB(data []byte) (w, h int, argb []byte, err error) {
 			r, g, b, a := img.At(x, y).RGBA()
 			// RGBA() returns pre-multiplied 16-bit values.
 			// Convert to 8-bit and write ARGB big-endian.
-			binary.BigEndian.PutUint32(argb[idx:], uint32(a>>8)<<24|uint32(r>>8)<<16|uint32(g>>8)<<8|uint32(b>>8))
+			binary.BigEndian.PutUint32(argb[idx:], (a>>8)<<24|(r>>8)<<16|(g>>8)<<8|(b>>8))
 			idx += 4
 		}
 	}

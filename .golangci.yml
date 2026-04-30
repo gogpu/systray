@@ -129,6 +129,7 @@ linters:
           - errcheck
           - gosec
           - goconst
+          - dogsled
           - dupl
           - gocognit
 
