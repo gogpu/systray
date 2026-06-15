@@ -27,6 +27,14 @@ const (
 	watcherPath      = "/StatusNotifierWatcher"
 	notifInterface   = "org.freedesktop.Notifications"
 	notifPath        = "/org/freedesktop/Notifications"
+
+	// SNI status values (D-Bus StatusNotifierItem spec).
+	sniStatusPassive = "Passive"
+	sniStatusActive  = "Active"
+
+	// D-Bus introspection argument directions.
+	dbusDirectionIn  = "in"
+	dbusDirectionOut = "out"
 )
 
 // dbusPixmap represents an icon pixmap in the StatusNotifierItem protocol.
@@ -74,7 +82,7 @@ func NewPlatformTray(callbacks *Callbacks) PlatformTray {
 	return &linuxTray{
 		callbacks: callbacks,
 		menuItems: make(map[int32]*MenuItem),
-		status:    "Passive",
+		status:    sniStatusPassive,
 		quit:      make(chan struct{}),
 	}
 }
@@ -111,7 +119,7 @@ func (t *linuxTray) Create() error {
 			"Category":      {Value: "ApplicationStatus", Writable: false, Emit: prop.EmitConst, Callback: nil},
 			"Id":            {Value: t.busName, Writable: false, Emit: prop.EmitConst, Callback: nil},
 			"Title":         {Value: "", Writable: false, Emit: prop.EmitTrue, Callback: nil},
-			"Status":        {Value: "Passive", Writable: false, Emit: prop.EmitTrue, Callback: nil},
+			"Status":        {Value: sniStatusPassive, Writable: false, Emit: prop.EmitTrue, Callback: nil},
 			"IconName":      {Value: "", Writable: false, Emit: prop.EmitTrue, Callback: nil},
 			"IconPixmap":    {Value: []dbusPixmap{}, Writable: false, Emit: prop.EmitTrue, Callback: nil},
 			"ToolTip":       {Value: dbusTooltip{}, Writable: false, Emit: prop.EmitTrue, Callback: nil},
@@ -136,20 +144,20 @@ func (t *linuxTray) Create() error {
 				Name: sniInterface,
 				Methods: []introspect.Method{
 					{Name: "Activate", Args: []introspect.Arg{
-						{Name: "x", Type: "i", Direction: "in"},
-						{Name: "y", Type: "i", Direction: "in"},
+						{Name: "x", Type: "i", Direction: dbusDirectionIn},
+						{Name: "y", Type: "i", Direction: dbusDirectionIn},
 					}},
 					{Name: "SecondaryActivate", Args: []introspect.Arg{
-						{Name: "x", Type: "i", Direction: "in"},
-						{Name: "y", Type: "i", Direction: "in"},
+						{Name: "x", Type: "i", Direction: dbusDirectionIn},
+						{Name: "y", Type: "i", Direction: dbusDirectionIn},
 					}},
 					{Name: "ContextMenu", Args: []introspect.Arg{
-						{Name: "x", Type: "i", Direction: "in"},
-						{Name: "y", Type: "i", Direction: "in"},
+						{Name: "x", Type: "i", Direction: dbusDirectionIn},
+						{Name: "y", Type: "i", Direction: dbusDirectionIn},
 					}},
 					{Name: "Scroll", Args: []introspect.Arg{
-						{Name: "delta", Type: "i", Direction: "in"},
-						{Name: "orientation", Type: "s", Direction: "in"},
+						{Name: "delta", Type: "i", Direction: dbusDirectionIn},
+						{Name: "orientation", Type: "s", Direction: dbusDirectionIn},
 					}},
 				},
 				Signals: []introspect.Signal{
@@ -198,35 +206,35 @@ func (t *linuxTray) Create() error {
 				Name: menuInterface,
 				Methods: []introspect.Method{
 					{Name: "GetLayout", Args: []introspect.Arg{
-						{Name: "parentId", Type: "i", Direction: "in"},
-						{Name: "recursionDepth", Type: "i", Direction: "in"},
-						{Name: "propertyNames", Type: "as", Direction: "in"},
-						{Name: "revision", Type: "u", Direction: "out"},
-						{Name: "layout", Type: "(ia{sv}av)", Direction: "out"},
+						{Name: "parentId", Type: "i", Direction: dbusDirectionIn},
+						{Name: "recursionDepth", Type: "i", Direction: dbusDirectionIn},
+						{Name: "propertyNames", Type: "as", Direction: dbusDirectionIn},
+						{Name: "revision", Type: "u", Direction: dbusDirectionOut},
+						{Name: "layout", Type: "(ia{sv}av)", Direction: dbusDirectionOut},
 					}},
 					{Name: "GetGroupProperties", Args: []introspect.Arg{
-						{Name: "ids", Type: "ai", Direction: "in"},
-						{Name: "propertyNames", Type: "as", Direction: "in"},
-						{Name: "properties", Type: "a(ia{sv})", Direction: "out"},
+						{Name: "ids", Type: "ai", Direction: dbusDirectionIn},
+						{Name: "propertyNames", Type: "as", Direction: dbusDirectionIn},
+						{Name: "properties", Type: "a(ia{sv})", Direction: dbusDirectionOut},
 					}},
 					{Name: "Event", Args: []introspect.Arg{
-						{Name: "id", Type: "i", Direction: "in"},
-						{Name: "eventId", Type: "s", Direction: "in"},
-						{Name: "data", Type: "v", Direction: "in"},
-						{Name: "timestamp", Type: "u", Direction: "in"},
+						{Name: "id", Type: "i", Direction: dbusDirectionIn},
+						{Name: "eventId", Type: "s", Direction: dbusDirectionIn},
+						{Name: "data", Type: "v", Direction: dbusDirectionIn},
+						{Name: "timestamp", Type: "u", Direction: dbusDirectionIn},
 					}},
 					{Name: "AboutToShow", Args: []introspect.Arg{
-						{Name: "id", Type: "i", Direction: "in"},
-						{Name: "needUpdate", Type: "b", Direction: "out"},
+						{Name: "id", Type: "i", Direction: dbusDirectionIn},
+						{Name: "needUpdate", Type: "b", Direction: dbusDirectionOut},
 					}},
 					{Name: "EventGroup", Args: []introspect.Arg{
-						{Name: "events", Type: "a(isvu)", Direction: "in"},
-						{Name: "idErrors", Type: "ai", Direction: "out"},
+						{Name: "events", Type: "a(isvu)", Direction: dbusDirectionIn},
+						{Name: "idErrors", Type: "ai", Direction: dbusDirectionOut},
 					}},
 					{Name: "AboutToShowGroup", Args: []introspect.Arg{
-						{Name: "ids", Type: "ai", Direction: "in"},
-						{Name: "updatesNeeded", Type: "ai", Direction: "out"},
-						{Name: "idErrors", Type: "ai", Direction: "out"},
+						{Name: "ids", Type: "ai", Direction: dbusDirectionIn},
+						{Name: "updatesNeeded", Type: "ai", Direction: dbusDirectionOut},
+						{Name: "idErrors", Type: "ai", Direction: dbusDirectionOut},
 					}},
 				},
 				Signals: []introspect.Signal{
@@ -426,12 +434,12 @@ func (t *linuxTray) ShowNotification(title, message string) error {
 // Show makes the tray icon visible by setting the SNI status to "Active".
 func (t *linuxTray) Show() error {
 	t.mu.Lock()
-	t.status = "Active"
+	t.status = sniStatusActive
 	t.mu.Unlock()
 
 	if t.props != nil {
-		t.props.SetMust(sniInterface, "Status", "Active")
-		if err := t.emitSignal(sniInterface+".NewStatus", "Active"); err != nil {
+		t.props.SetMust(sniInterface, "Status", sniStatusActive)
+		if err := t.emitSignal(sniInterface+".NewStatus", sniStatusActive); err != nil {
 			slog.Warn("systray: emit NewStatus failed", "err", err)
 		}
 	}
@@ -442,12 +450,12 @@ func (t *linuxTray) Show() error {
 // Hide makes the tray icon invisible by setting the SNI status to "Passive".
 func (t *linuxTray) Hide() error {
 	t.mu.Lock()
-	t.status = "Passive"
+	t.status = sniStatusPassive
 	t.mu.Unlock()
 
 	if t.props != nil {
-		t.props.SetMust(sniInterface, "Status", "Passive")
-		if err := t.emitSignal(sniInterface+".NewStatus", "Passive"); err != nil {
+		t.props.SetMust(sniInterface, "Status", sniStatusPassive)
+		if err := t.emitSignal(sniInterface+".NewStatus", sniStatusPassive); err != nil {
 			slog.Warn("systray: emit NewStatus failed", "err", err)
 		}
 	}
@@ -474,8 +482,8 @@ func (t *linuxTray) Run() error {
 func (t *linuxTray) Destroy() {
 	// Signal Passive status to the DE.
 	if t.conn != nil && t.props != nil {
-		t.props.SetMust(sniInterface, "Status", "Passive")
-		if err := t.emitSignal(sniInterface+".NewStatus", "Passive"); err != nil {
+		t.props.SetMust(sniInterface, "Status", sniStatusPassive)
+		if err := t.emitSignal(sniInterface+".NewStatus", sniStatusPassive); err != nil {
 			slog.Warn("systray: emit NewStatus (Passive) on destroy failed", "err", err)
 		}
 	}
