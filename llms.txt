@@ -1,0 +1,13 @@
+# systray — GoGPU Ecosystem
+
+> Part of the GoGPU Pure Go GPU Computing Ecosystem.
+
+## Docs
+
+- [API Reference](https://pkg.go.dev/github.com/gogpu/systray)
+- [AGENTS.md](https://github.com/gogpu/systray/blob/main/AGENTS.md): AI agent instructions
+
+## Ecosystem
+
+- [GoGPU Ecosystem](https://github.com/gogpu/gogpu/blob/main/AGENTS.md): Full ecosystem map
+- [Open Collective](https://opencollective.com/gogpu)
