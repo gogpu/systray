@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1] - 2026-06-25
+
+### Changed
+
+- **deps:** goffi v0.5.3 → v0.5.5 (CGO_ENABLED=1 coexistence, zero-alloc FFI, ABI-safe structs)
+- **deps:** godbus/dbus v5.1.0 → v5.2.2
+
 ## [0.1.0] - 2026-04-30
 
 ### Added
