@@ -191,7 +191,7 @@ func GetClass(name string) Class {
 		name: namePtr,
 	}
 
-	err := ffi.CallFunction(
+	_, err := ffi.CallFunction(
 		rt.cifSelector,
 		rt.objcGetClass,
 		unsafe.Pointer(&result),
@@ -222,7 +222,7 @@ func RegisterSelector(name string) SEL {
 		name: namePtr,
 	}
 
-	err := ffi.CallFunction(
+	_, err := ffi.CallFunction(
 		rt.cifSelector,
 		rt.selRegisterName,
 		unsafe.Pointer(&result),
@@ -254,7 +254,7 @@ func (id ID) Send(sel SEL) ID {
 		cmd:  uintptr(sel),
 	}
 
-	err := ffi.CallFunction(
+	_, err := ffi.CallFunction(
 		rt.cifVoidPtr,
 		rt.objcMsgSend,
 		unsafe.Pointer(&result),
@@ -328,7 +328,7 @@ func msgSend(self ID, sel SEL, args ...uintptr) ID {
 	}
 
 	var result uintptr
-	err = ffi.CallFunction(
+	_, err = ffi.CallFunction(
 		cif,
 		rt.objcMsgSend,
 		unsafe.Pointer(&result),
@@ -404,7 +404,7 @@ func (id ID) SendSize(sel SEL, size NSSize) ID {
 	}
 
 	var result uintptr
-	err = ffi.CallFunction(
+	_, err = ffi.CallFunction(
 		cif,
 		rt.objcMsgSend,
 		unsafe.Pointer(&result),
@@ -461,7 +461,7 @@ func (id ID) SendDouble(sel SEL, arg float64) ID {
 	}
 
 	var result uintptr
-	err = ffi.CallFunction(
+	_, err = ffi.CallFunction(
 		cif,
 		rt.objcMsgSend,
 		unsafe.Pointer(&result),
@@ -499,7 +499,7 @@ func MsgSend3Ptr(id ID, sel SEL, arg0, arg1, arg2 uintptr) ID {
 	cmd := uintptr(sel)
 
 	var result uintptr
-	if err := ffi.CallFunction(cif,
+	if _, err := ffi.CallFunction(cif,
 		rt.objcMsgSend,
 		unsafe.Pointer(&result),
 		[]unsafe.Pointer{
@@ -548,7 +548,7 @@ func AllocateClassPair(superclass Class, name string) Class {
 	var extraBytes uintptr
 
 	var result uintptr
-	if err := ffi.CallFunction(cif,
+	if _, err := ffi.CallFunction(cif,
 		rt.objcAllocateClassPair,
 		unsafe.Pointer(&result),
 		[]unsafe.Pointer{
@@ -590,7 +590,7 @@ func ClassAddMethod(cls Class, sel SEL, imp uintptr, typeEncoding string) bool {
 	typePtr := uintptr(unsafe.Pointer(&typeBytes[0]))
 
 	var result uintptr
-	if err := ffi.CallFunction(cif,
+	if _, err := ffi.CallFunction(cif,
 		rt.classAddMethod,
 		unsafe.Pointer(&result),
 		[]unsafe.Pointer{
@@ -622,7 +622,7 @@ func RegisterClassPair(cls Class) {
 	}
 
 	clsPtr := uintptr(cls)
-	_ = ffi.CallFunction(cif,
+	_, _ = ffi.CallFunction(cif,
 		rt.objcRegisterClassPair,
 		nil,
 		[]unsafe.Pointer{
