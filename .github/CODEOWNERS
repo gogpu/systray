@@ -3,3 +3,19 @@
 
 # Default owner for everything
 * @kolkov
+
+# Platform backends
+internal/platform_windows.go @kolkov
+internal/platform_darwin.go  @kolkov
+internal/platform_linux.go   @kolkov
+internal/darwin/             @kolkov
+
+# Public API
+systray.go @kolkov
+menu.go    @kolkov
+
+# CI/CD
+.github/ @kolkov
+
+# Documentation
+*.md @kolkov

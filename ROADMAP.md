@@ -4,9 +4,9 @@
 
 ---
 
-## Current State: v0.1.0
+## Current State: v0.1.1
 
-✅ **All three platforms implemented:**
+All three platforms implemented and production-ready:
 
 - **Windows** — Shell_NotifyIconW, context menus, balloon notifications, dark mode auto-switching, explorer crash recovery
 - **macOS** — NSStatusBar/NSStatusItem via goffi ObjC runtime, template icons, NSMenu, NSUserNotification
@@ -14,10 +14,11 @@
 - **Public API** — builder pattern, multiple trays, click/doubleclick/rightclick handlers
 - **72 tests**, 84% coverage on public API
 
-### Recent Highlights
+### Release History
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
+| **v0.1.1** | 2026-06-25 | deps: goffi v0.5.5, godbus v5.2.2 |
 | **v0.1.0** | 2026-04-30 | Initial release — all 3 platforms, menus, notifications, dark mode, 72 tests |
 
 ---
@@ -73,7 +74,7 @@ internal/platform_linux.go      D-Bus StatusNotifierItem
 internal/darwin/objc.go         ObjC runtime wrapper
 ```
 
-Follows Qt6 `QPlatformSystemTrayIcon` three-layer pattern (ADR-011).
+Follows Qt6 `QPlatformSystemTrayIcon` three-layer pattern.
 
 ---
 
