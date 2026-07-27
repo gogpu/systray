@@ -20,16 +20,17 @@ func newTestTray(t *testing.T) (*SystemTray, *testPlatform) {
 	return tray, mock
 }
 
-// testPlatform implements internal.PlatformTray for testing.
+// testPlatform implements internal.PlatformTray and internal.MenuItemUpdater for testing.
 type testPlatform struct {
-	created    bool
-	icon       []byte
-	tooltip    string
-	menu       *internal.Menu
-	visible    bool
-	destroyed  bool
-	notifTitle string
-	notifMsg   string
+	created         bool
+	icon            []byte
+	tooltip         string
+	menu            *internal.Menu
+	visible         bool
+	destroyed       bool
+	notifTitle      string
+	notifMsg        string
+	lastUpdatedItem *internal.MenuItem
 }
 
 func (m *testPlatform) Create() error                     { m.created = true; return nil }
@@ -46,6 +47,10 @@ func (m *testPlatform) Hide() error                  { m.visible = false; return
 func (m *testPlatform) Bounds() (int, int, int, int) { return 10, 20, 24, 24 }
 func (m *testPlatform) Run() error                   { return nil }
 func (m *testPlatform) Destroy()                     { m.destroyed = true }
+func (m *testPlatform) UpdateItem(item *internal.MenuItem) error {
+	m.lastUpdatedItem = item
+	return nil
+}
 
 // --- ID tests ---
 
@@ -165,7 +170,10 @@ func TestSystemTray_SetMenu(t *testing.T) {
 	t.Parallel()
 
 	tray, mock := newTestTray(t)
-	menu := NewMenu().Add("Open", nil).AddSeparator().Add("Quit", nil)
+	menu := NewMenu()
+	menu.Add("Open", nil)
+	menu.AddSeparator()
+	menu.Add("Quit", nil)
 
 	result := tray.SetMenu(menu)
 
@@ -345,7 +353,8 @@ func TestSystemTray_BuilderChaining(t *testing.T) {
 	t.Parallel()
 
 	tray, mock := newTestTray(t)
-	menu := NewMenu().Add("Quit", nil)
+	menu := NewMenu()
+	menu.Add("Quit", nil)
 
 	// Full builder chain.
 	result := tray.
@@ -387,7 +396,8 @@ func TestSystemTray_BuilderChaining_MinimalQuickStart(t *testing.T) {
 	//   tray := systray.New()
 	//   tray.SetIcon(iconPNG).SetTooltip("My App").SetMenu(menu).Show()
 	tray, mock := newTestTray(t)
-	menu := NewMenu().Add("Quit", nil)
+	menu := NewMenu()
+	menu.Add("Quit", nil)
 
 	tray.SetIcon([]byte{0xFF}).SetTooltip("My App").SetMenu(menu).Show()
 
@@ -428,5 +438,76 @@ func TestSystemTray_CallbackPointerSharing(t *testing.T) {
 	}
 	if !rightClickCalled {
 		t.Error("OnRightClick not callable through impl.Callbacks")
+	}
+}
+
+// --- MenuItem dynamic update tests ---
+
+func TestMenuItem_SetLabel(t *testing.T) {
+	t.Parallel()
+	tray, mock := newTestTray(t)
+	menu := NewMenu()
+	item := menu.Add("Original", nil)
+	tray.SetMenu(menu)
+
+	item.SetLabel("Updated")
+
+	if item.impl.Label != "Updated" {
+		t.Errorf("label = %q, want %q", item.impl.Label, "Updated")
+	}
+	if mock.lastUpdatedItem == nil {
+		t.Error("UpdateItem was not called on platform")
+	}
+}
+
+func TestMenuItem_SetChecked(t *testing.T) {
+	t.Parallel()
+	tray, _ := newTestTray(t)
+	menu := NewMenu()
+	item := menu.AddCheckbox("Toggle", false, nil)
+	tray.SetMenu(menu)
+
+	item.SetChecked(true)
+
+	if !item.impl.Checked {
+		t.Error("checked should be true")
+	}
+}
+
+func TestMenuItem_SetDisabled(t *testing.T) {
+	t.Parallel()
+	tray, _ := newTestTray(t)
+	menu := NewMenu()
+	item := menu.Add("Action", nil)
+	tray.SetMenu(menu)
+
+	item.SetDisabled(true)
+
+	if !item.impl.Disabled {
+		t.Error("disabled should be true")
+	}
+}
+
+func TestMenuItem_SetLabel_BeforeSetMenu(t *testing.T) {
+	t.Parallel()
+	menu := NewMenu()
+	item := menu.Add("Original", nil)
+
+	// Update before SetMenu — should work without panic, just no platform dispatch.
+	item.SetLabel("Updated")
+
+	if item.impl.Label != "Updated" {
+		t.Errorf("label = %q, want %q", item.impl.Label, "Updated")
+	}
+}
+
+func TestMenuItem_ID_Unique(t *testing.T) {
+	t.Parallel()
+	menu := NewMenu()
+	item1 := menu.Add("One", nil)
+	item2 := menu.Add("Two", nil)
+
+	if item1.impl.ID() == item2.impl.ID() {
+		t.Error("menu items should have unique IDs")
 	}
 }

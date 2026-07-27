@@ -70,6 +70,8 @@ var darwinSels struct {
 	setSubmenu                  darwin.SEL // setSubmenu:
 	initWithTitleActionKeyEquiv darwin.SEL // initWithTitle:action:keyEquivalent:
 	setState                    darwin.SEL // setState:
+	setEnabled                  darwin.SEL // setEnabled:
+	itemWithTag                 darwin.SEL // itemWithTag:
 
 	// NSDate
 	distantPast   darwin.SEL
@@ -144,6 +146,8 @@ func initDarwinSels() {
 		darwinSels.initWithTitleActionKeyEquiv = darwin.RegisterSelector(
 			"initWithTitle:action:keyEquivalent:")
 		darwinSels.setState = darwin.RegisterSelector("setState:")
+		darwinSels.setEnabled = darwin.RegisterSelector("setEnabled:")
+		darwinSels.itemWithTag = darwin.RegisterSelector("itemWithTag:")
 
 		// NSDate
 		darwinSels.distantPast = darwin.RegisterSelector("distantPast")
@@ -189,6 +193,7 @@ type darwinTray struct {
 	// menuActions maps menu item indices to their callbacks.
 	// Populated when SetMenu builds the NSMenu hierarchy.
 	menuActions map[int]func()
+	itemTags    map[uint32]int // item.ID() -> NSMenuItem tag for UpdateItem lookup
 	menuMu      sync.Mutex
 }
 
@@ -199,15 +204,20 @@ var (
 	errGoSystrayTargetClass  error
 )
 
-// activeTray is the tray instance receiving callbacks from the ObjC target.
-// Only one systray instance per process on macOS (there is one status bar).
-var activeTray *darwinTray
+// trayRegistry maps GoSystrayTarget ObjC instance pointer to the owning darwinTray.
+// In ObjC callbacks, the `self` parameter identifies which target fired,
+// allowing correct routing when multiple trays exist.
+var (
+	trayRegistryMu  sync.RWMutex
+	trayRegistryMap = make(map[uintptr]*darwinTray)
+)
 
 // NewPlatformTray creates a macOS system tray implementation.
 func NewPlatformTray(callbacks *Callbacks) PlatformTray {
 	return &darwinTray{
 		callbacks:   callbacks,
 		menuActions: make(map[int]func()),
+		itemTags:    make(map[uint32]int),
 	}
 }
 
@@ -215,9 +225,6 @@ func NewPlatformTray(callbacks *Callbacks) PlatformTray {
 func (t *darwinTray) Create() error {
 	initDarwinSels()
 	initDarwinClasses()
-
-	// Store as active tray for ObjC callbacks.
-	activeTray = t
 
 	// Get the system status bar.
 	t.statusBar = darwinClasses.NSStatusBar.Send(darwinSels.systemStatusBar)
@@ -251,6 +258,11 @@ func (t *darwinTray) Create() error {
 		return errors.New("darwin: failed to create GoSystrayTarget")
 	}
 
+	// Register in tray registry so ObjC callbacks can route to this instance.
+	trayRegistryMu.Lock()
+	trayRegistryMap[t.target.Ptr()] = t
+	trayRegistryMu.Unlock()
+
 	// Set the button's target to our GoSystrayTarget instance and its action
 	// to the trayClicked: selector. When the user clicks the status item
 	// button, the ObjC runtime sends trayClicked: to our target.
@@ -280,8 +292,11 @@ func registerGoSystrayTarget() (darwin.Class, error) {
 		// Add trayClicked: method — called when the status bar button is clicked.
 		// ObjC signature: -(void)trayClicked:(id)sender → "v@:@"
 		trayClickedIMP := ffi.NewCallback(func(self, sel, sender uintptr) uintptr {
-			if activeTray != nil && activeTray.callbacks != nil {
-				if fn := activeTray.callbacks.OnClick; fn != nil {
+			trayRegistryMu.RLock()
+			t := trayRegistryMap[self]
+			trayRegistryMu.RUnlock()
+			if t != nil && t.callbacks != nil {
+				if fn := t.callbacks.OnClick; fn != nil {
 					fn()
 				}
 			}
@@ -293,17 +308,19 @@ func registerGoSystrayTarget() (darwin.Class, error) {
 		// We use the sender's tag to look up the Go callback.
 		// ObjC signature: -(void)menuItemClicked:(NSMenuItem*)sender → "v@:@"
 		menuClickedIMP := ffi.NewCallback(func(self, sel, sender uintptr) uintptr {
-			if activeTray == nil {
+			trayRegistryMu.RLock()
+			t := trayRegistryMap[self]
+			trayRegistryMu.RUnlock()
+			if t == nil {
 				return 0
 			}
-			// Get the tag from the sender: [sender tag]
 			tagSel := darwin.RegisterSelector("tag")
 			tag := darwin.ID(sender).Send(tagSel)
 			idx := int(tag)
 
-			activeTray.menuMu.Lock()
-			fn := activeTray.menuActions[idx]
-			activeTray.menuMu.Unlock()
+			t.menuMu.Lock()
+			fn := t.menuActions[idx]
+			t.menuMu.Unlock()
 
 			if fn != nil {
 				fn()
@@ -426,8 +443,9 @@ func (t *darwinTray) SetMenu(menu *Menu) error {
 
 	// Build the NSMenu hierarchy.
 	t.menuMu.Lock()
-	// Clear old actions.
+	// Clear old actions and tag mappings.
 	t.menuActions = make(map[int]func())
+	t.itemTags = make(map[uint32]int)
 	t.menuMu.Unlock()
 
 	counter := menuItemCallbackBaseID
@@ -533,18 +551,69 @@ func (t *darwinTray) buildNSMenu(title string, menu *Menu, counter *int) darwin.
 				}
 			}
 
-			// Register Go callback.
+			// Register Go callback and map item ID to tag for UpdateItem lookup.
+			t.menuMu.Lock()
 			if item.OnClick != nil {
-				t.menuMu.Lock()
 				t.menuActions[idx] = item.OnClick
-				t.menuMu.Unlock()
 			}
+			t.itemTags[item.ID()] = idx
+			t.menuMu.Unlock()
 
 			nsMenu.SendPtr(darwinSels.addItem, nsItem.Ptr())
 		}
 	}
 
 	return nsMenu
+}
+
+// UpdateItem updates a single menu item's native properties in-place.
+// Finds the NSMenuItem by tag (matching item.ID()) and updates title, state, enabled, and icon.
+func (t *darwinTray) UpdateItem(item *MenuItem) error {
+	if t.nsMenu.IsNil() {
+		return nil
+	}
+
+	// Look up the ObjC tag for this item.
+	t.menuMu.Lock()
+	tag, ok := t.itemTags[item.ID()]
+	t.menuMu.Unlock()
+	if !ok {
+		return nil
+	}
+
+	// [nsMenu itemWithTag:tag]
+	nsItem := t.nsMenu.SendInt(darwinSels.itemWithTag, int64(tag))
+	if nsItem.IsNil() {
+		return nil
+	}
+
+	// Update title: [nsItem setTitle:newTitle]
+	nsTitle := darwin.NewNSString(item.Label)
+	if !nsTitle.IsNil() {
+		nsItem.SendPtr(darwinSels.setTitle, nsTitle.Ptr())
+	}
+
+	// Update checked state: [nsItem setState:]
+	if item.Type == MenuItemCheckbox {
+		state := int64(0)
+		if item.Checked {
+			state = 1
+		}
+		nsItem.SendInt(darwinSels.setState, state)
+	}
+
+	// Update enabled state: [nsItem setEnabled:]
+	nsItem.SendBool(darwinSels.setEnabled, !item.Disabled)
+
+	// Update icon if provided.
+	if len(item.Icon) > 0 {
+		nsImage := createNSImage(item.Icon, false)
+		if !nsImage.IsNil() {
+			nsItem.SendPtr(darwinSels.setImage, nsImage.Ptr())
+		}
+	}
+
+	return nil
 }
 
 // ShowNotification displays an OS-level notification using NSUserNotification.
@@ -684,6 +753,13 @@ func (t *darwinTray) Destroy() {
 		t.statusBar.SendPtr(darwinSels.removeStatusItem, t.statusItem.Ptr())
 	}
 
+	// Unregister from tray registry before releasing the target.
+	if !t.target.IsNil() {
+		trayRegistryMu.Lock()
+		delete(trayRegistryMap, t.target.Ptr())
+		trayRegistryMu.Unlock()
+	}
+
 	// Release ObjC objects.
 	if !t.target.IsNil() {
 		t.target.Send(darwinSels.release)
@@ -698,6 +774,4 @@ func (t *darwinTray) Destroy() {
 	if !t.nsApp.IsNil() {
 		t.nsApp.SendPtr(darwinSels.stop, 0)
 	}
-
-	activeTray = nil
 }

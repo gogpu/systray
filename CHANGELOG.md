@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-07-27
+
+### Added
+
+- **Dynamic menu updates:** `MenuItem.SetLabel()`, `SetChecked()`, `SetDisabled()`, `SetIcon()` — update native menu items in-place without rebuilding the entire menu (Qt6 QAction pattern)
+- **MenuItemUpdater interface** — optional platform interface for dispatching live menu updates
+- **Windows:** `SetMenuItemInfoW` for in-place menu item updates (MIIM_STRING + MIIM_STATE)
+- **macOS:** `NSMenuItem` setTitle/setState/setEnabled via `itemWithTag:` lookup
+- **Linux:** D-Bus `ItemsPropertiesUpdated` signal for individual menu item property changes
+
+### Fixed
+
+- **macOS multi-tray:** replace global `activeTray` singleton with per-instance `trayRegistryMap` keyed by ObjC target — each tray now correctly receives its own callbacks ([#7](https://github.com/gogpu/systray/issues/7))
+- **Linux multi-tray:** use `dbus.ConnectSessionBus()` (private connection per tray) instead of shared singleton, and unique `PID-{trayID}` bus name suffix per SNI spec ([#7](https://github.com/gogpu/systray/issues/7))
+
+### Changed
+
+- **Breaking:** `Menu.Add()`, `AddCheckbox()`, `AddSubmenu()`, `AddWithIcon()` now return `*MenuItem` instead of `*Menu` — enables dynamic updates on the returned item handle ([#8](https://github.com/gogpu/systray/issues/8))
+- `Menu.AddSeparator()` still returns `*Menu` for chaining (separators don't need dynamic updates)
+- **deps:** goffi v0.6.0 → v0.6.2
+
 ## [0.1.2] - 2026-07-12
 
 ### Changed
@@ -32,6 +53,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Run() message loop for standalone usage
 - 72 tests, 84% public API coverage
 
-[Unreleased]: https://github.com/gogpu/systray/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/gogpu/systray/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/gogpu/systray/compare/v0.1.2...v0.2.0
+[0.1.2]: https://github.com/gogpu/systray/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/gogpu/systray/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/gogpu/systray/releases/tag/v0.1.0

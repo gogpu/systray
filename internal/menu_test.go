@@ -20,13 +20,15 @@ func TestMenu_Add(t *testing.T) {
 	t.Parallel()
 
 	called := false
-	m := NewMenu().Add("Open", func() { called = true })
+	m := NewMenu()
+	item := m.Add("Open", func() { called = true })
 
 	if len(m.Items) != 1 {
 		t.Fatalf("expected 1 item, got %d", len(m.Items))
 	}
-
-	item := m.Items[0]
+	if item != m.Items[0] {
+		t.Error("returned item should be the same as the one appended to menu")
+	}
 	if item.Label != "Open" {
 		t.Errorf("label = %q, want %q", item.Label, "Open")
 	}
@@ -46,12 +48,13 @@ func TestMenu_Add(t *testing.T) {
 func TestMenu_Add_NilCallback(t *testing.T) {
 	t.Parallel()
 
-	m := NewMenu().Add("NoOp", nil)
+	m := NewMenu()
+	item := m.Add("NoOp", nil)
 
 	if len(m.Items) != 1 {
 		t.Fatalf("expected 1 item, got %d", len(m.Items))
 	}
-	if m.Items[0].OnClick != nil {
+	if item.OnClick != nil {
 		t.Error("expected nil OnClick for nil callback")
 	}
 }
@@ -72,12 +75,11 @@ func TestMenu_AddCheckbox(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			m := NewMenu().AddCheckbox(tt.label, tt.checked, nil)
+			m := NewMenu()
+			item := m.AddCheckbox(tt.label, tt.checked, nil)
 			if len(m.Items) != 1 {
 				t.Fatalf("expected 1 item, got %d", len(m.Items))
 			}
-
-			item := m.Items[0]
 			if item.Label != tt.label {
 				t.Errorf("label = %q, want %q", item.Label, tt.label)
 			}
@@ -94,13 +96,15 @@ func TestMenu_AddCheckbox(t *testing.T) {
 func TestMenu_AddSeparator(t *testing.T) {
 	t.Parallel()
 
-	m := NewMenu().AddSeparator()
+	m := NewMenu()
+	item := m.AddSeparator()
 
 	if len(m.Items) != 1 {
 		t.Fatalf("expected 1 item, got %d", len(m.Items))
 	}
-
-	item := m.Items[0]
+	if item != m.Items[0] {
+		t.Error("returned item should be the same as the one appended to menu")
+	}
 	if item.Type != MenuItemSeparator {
 		t.Errorf("type = %d, want MenuItemSeparator (%d)", item.Type, MenuItemSeparator)
 	}
@@ -115,14 +119,15 @@ func TestMenu_AddSeparator(t *testing.T) {
 func TestMenu_AddSubmenu(t *testing.T) {
 	t.Parallel()
 
-	sub := NewMenu().Add("SubItem", nil)
-	m := NewMenu().AddSubmenu("More", sub)
+	sub := NewMenu()
+	sub.Add("SubItem", nil)
+
+	m := NewMenu()
+	item := m.AddSubmenu("More", sub)
 
 	if len(m.Items) != 1 {
 		t.Fatalf("expected 1 item, got %d", len(m.Items))
 	}
-
-	item := m.Items[0]
 	if item.Label != "More" {
 		t.Errorf("label = %q, want %q", item.Label, "More")
 	}
@@ -146,10 +151,12 @@ func TestMenu_AddSubmenu_DeepNesting(t *testing.T) {
 	const depth = 5
 
 	// Build nested menu 5 levels deep.
-	innermost := NewMenu().Add("Leaf", nil)
+	innermost := NewMenu()
+	innermost.Add("Leaf", nil)
 	current := innermost
 	for i := depth - 1; i > 0; i-- {
-		parent := NewMenu().AddSubmenu("Level", current)
+		parent := NewMenu()
+		parent.AddSubmenu("Level", current)
 		current = parent
 	}
 
@@ -179,13 +186,12 @@ func TestMenu_AddWithIcon(t *testing.T) {
 	t.Parallel()
 
 	icon := []byte{0x89, 0x50, 0x4E, 0x47} // PNG magic bytes
-	m := NewMenu().AddWithIcon("Copy", icon, nil)
+	m := NewMenu()
+	item := m.AddWithIcon("Copy", icon, nil)
 
 	if len(m.Items) != 1 {
 		t.Fatalf("expected 1 item, got %d", len(m.Items))
 	}
-
-	item := m.Items[0]
 	if item.Label != "Copy" {
 		t.Errorf("label = %q, want %q", item.Label, "Copy")
 	}
@@ -197,20 +203,25 @@ func TestMenu_AddWithIcon(t *testing.T) {
 	}
 }
 
-func TestMenu_Chaining(t *testing.T) {
+func TestMenu_MultipleItems(t *testing.T) {
 	t.Parallel()
 
-	m := NewMenu().
-		Add("File", nil).
-		AddSeparator().
-		AddCheckbox("Auto-save", true, nil).
-		AddSeparator().
-		AddSubmenu("Recent", NewMenu().Add("doc1.txt", nil).Add("doc2.txt", nil)).
-		AddWithIcon("Paste", []byte{0xFF}, nil).
-		Add("Exit", nil)
+	m := NewMenu()
+	m.Add("File", nil)
+	m.AddSeparator()
+	m.AddCheckbox("Auto-save", true, nil)
+	m.AddSeparator()
+
+	recentMenu := NewMenu()
+	recentMenu.Add("doc1.txt", nil)
+	recentMenu.Add("doc2.txt", nil)
+	m.AddSubmenu("Recent", recentMenu)
+
+	m.AddWithIcon("Paste", []byte{0xFF}, nil)
+	m.Add("Exit", nil)
 
 	if len(m.Items) != 7 {
-		t.Fatalf("expected 7 items after chaining, got %d", len(m.Items))
+		t.Fatalf("expected 7 items, got %d", len(m.Items))
 	}
 
 	expectedTypes := []MenuItemType{
@@ -239,19 +250,6 @@ func TestMenu_Chaining(t *testing.T) {
 	}
 }
 
-func TestMenu_Chaining_ReturnsSamePointer(t *testing.T) {
-	t.Parallel()
-
-	m := NewMenu()
-	m2 := m.Add("A", nil)
-	m3 := m2.AddSeparator()
-	m4 := m3.Add("B", nil)
-
-	if m != m2 || m2 != m3 || m3 != m4 {
-		t.Error("chaining methods should return the same *Menu pointer")
-	}
-}
-
 func TestMenuItemType_Values(t *testing.T) {
 	t.Parallel()
 
@@ -273,8 +271,8 @@ func TestMenuItemType_Values(t *testing.T) {
 func TestMenuItem_DefaultProperties(t *testing.T) {
 	t.Parallel()
 
-	m := NewMenu().Add("Test", nil)
-	item := m.Items[0]
+	m := NewMenu()
+	item := m.Add("Test", nil)
 
 	if item.Checked {
 		t.Error("default item should not be checked")
@@ -295,12 +293,135 @@ func TestMenu_EmptyMenu(t *testing.T) {
 
 	m := NewMenu()
 
-	// Chaining on empty menu should still work.
-	result := m.AddSeparator()
-	if result != m {
-		t.Error("AddSeparator on empty menu should return same pointer")
+	// AddSeparator on empty menu should work.
+	item := m.AddSeparator()
+	if item == nil {
+		t.Error("AddSeparator should return non-nil item")
 	}
 	if len(m.Items) != 1 {
 		t.Errorf("expected 1 item after AddSeparator, got %d", len(m.Items))
 	}
+}
+
+func TestMenuItem_ID_NonZero(t *testing.T) {
+	t.Parallel()
+
+	m := NewMenu()
+	item := m.Add("Test", nil)
+
+	if item.ID() == 0 {
+		t.Error("menu item ID should be non-zero")
+	}
+}
+
+func TestMenuItem_ID_Unique(t *testing.T) {
+	t.Parallel()
+
+	m := NewMenu()
+	item1 := m.Add("One", nil)
+	item2 := m.Add("Two", nil)
+	item3 := m.AddCheckbox("Three", false, nil)
+
+	ids := map[uint32]bool{item1.ID(): true, item2.ID(): true, item3.ID(): true}
+	if len(ids) != 3 {
+		t.Error("menu items should have unique IDs")
+	}
+}
+
+func TestMenuItem_SetLabel(t *testing.T) {
+	t.Parallel()
+
+	m := NewMenu()
+	item := m.Add("Original", nil)
+
+	item.SetLabel("Updated")
+
+	if item.Label != "Updated" {
+		t.Errorf("label = %q, want %q", item.Label, "Updated")
+	}
+}
+
+func TestMenuItem_SetChecked(t *testing.T) {
+	t.Parallel()
+
+	m := NewMenu()
+	item := m.AddCheckbox("Toggle", false, nil)
+
+	item.SetChecked(true)
+
+	if !item.Checked {
+		t.Error("checked should be true")
+	}
+}
+
+func TestMenuItem_SetDisabled(t *testing.T) {
+	t.Parallel()
+
+	m := NewMenu()
+	item := m.Add("Action", nil)
+
+	item.SetDisabled(true)
+
+	if !item.Disabled {
+		t.Error("disabled should be true")
+	}
+}
+
+func TestMenuItem_SetIcon(t *testing.T) {
+	t.Parallel()
+
+	m := NewMenu()
+	item := m.Add("Item", nil)
+
+	icon := []byte{0x89, 0x50}
+	item.SetIcon(icon)
+
+	if len(item.Icon) != 2 {
+		t.Errorf("icon length = %d, want 2", len(item.Icon))
+	}
+}
+
+func TestSetMenuUpdater_Recursive(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	updater := &mockUpdater{onUpdate: func(_ *MenuItem) { calls++ }}
+
+	sub := NewMenu()
+	sub.Add("SubItem", nil)
+
+	root := NewMenu()
+	root.Add("Top", nil)
+	root.AddSubmenu("More", sub)
+
+	SetMenuUpdater(root, updater)
+
+	// 3 items total: "Top", submenu item, "SubItem"
+	// Trigger updates on all.
+	root.Items[0].SetLabel("Changed1")
+	root.Items[1].SetLabel("Changed2")
+	sub.Items[0].SetLabel("Changed3")
+
+	if calls != 3 {
+		t.Errorf("updater called %d times, want 3", calls)
+	}
+}
+
+func TestSetMenuUpdater_NilMenu(t *testing.T) {
+	t.Parallel()
+
+	// Should not panic.
+	SetMenuUpdater(nil, &mockUpdater{})
+}
+
+// mockUpdater implements MenuItemUpdater for testing.
+type mockUpdater struct {
+	onUpdate func(*MenuItem)
+}
+
+func (u *mockUpdater) UpdateItem(item *MenuItem) error {
+	if u.onUpdate != nil {
+		u.onUpdate(item)
+	}
+	return nil
 }

@@ -63,10 +63,12 @@ type linuxTray struct {
 	props     *prop.Properties
 	menuProps *prop.Properties
 	busName   string
+	trayID    TrayID
 	callbacks *Callbacks
 
 	menu      *Menu
-	menuItems map[int32]*MenuItem // id -> item for Event dispatch
+	menuItems map[int32]*MenuItem // dbus id -> item for Event dispatch
+	itemIDs   map[uint32]int32    // MenuItem.ID() -> dbus menu item ID
 	menuRev   uint32              // layout revision for dbusmenu
 
 	iconPixmap []dbusPixmap // cached ARGB pixmap
@@ -82,6 +84,7 @@ func NewPlatformTray(callbacks *Callbacks) PlatformTray {
 	return &linuxTray{
 		callbacks: callbacks,
 		menuItems: make(map[int32]*MenuItem),
+		itemIDs:   make(map[uint32]int32),
 		status:    sniStatusPassive,
 		quit:      make(chan struct{}),
 	}
@@ -91,14 +94,17 @@ func NewPlatformTray(callbacks *Callbacks) PlatformTray {
 // the StatusNotifierItem and dbusmenu objects, and registers with the
 // StatusNotifierWatcher.
 func (t *linuxTray) Create() error {
-	conn, err := dbus.SessionBus()
+	conn, err := dbus.ConnectSessionBus()
 	if err != nil {
 		return fmt.Errorf("connect to session bus: %w", err)
 	}
 	t.conn = conn
 
 	// Request a unique bus name following the SNI convention.
-	t.busName = fmt.Sprintf("org.kde.StatusNotifierItem-%d-1", os.Getpid())
+	// Each tray gets its own private connection and unique bus name suffix,
+	// so multiple trays in the same process don't collide.
+	t.trayID = NewTrayID()
+	t.busName = fmt.Sprintf("org.kde.StatusNotifierItem-%d-%d", os.Getpid(), t.trayID)
 	reply, err := conn.RequestName(t.busName, dbus.NameFlagDoNotQueue)
 	if err != nil {
 		return fmt.Errorf("request bus name %s: %w", t.busName, err)
@@ -376,6 +382,7 @@ func (t *linuxTray) SetMenu(menu *Menu) error {
 	t.mu.Lock()
 	t.menu = menu
 	t.menuItems = make(map[int32]*MenuItem)
+	t.itemIDs = make(map[uint32]int32)
 	if menu != nil {
 		t.buildMenuItemMap(menu.Items, 1)
 	}
@@ -399,12 +406,51 @@ func (t *linuxTray) buildMenuItemMap(items []*MenuItem, nextID int32) int32 {
 	for _, item := range items {
 		id := nextID
 		t.menuItems[id] = item
+		t.itemIDs[item.ID()] = id
 		nextID++
 		if item.Type == MenuItemSubmenu && item.Submenu != nil {
 			nextID = t.buildMenuItemMap(item.Submenu.Items, nextID)
 		}
 	}
 	return nextID
+}
+
+// UpdateItem updates a single menu item's properties and emits ItemsPropertiesUpdated
+// so the desktop environment refreshes the item in-place without a full layout rebuild.
+func (t *linuxTray) UpdateItem(item *MenuItem) error {
+	if t.conn == nil {
+		return nil
+	}
+
+	t.mu.RLock()
+	dbusID, ok := t.itemIDs[item.ID()]
+	t.mu.RUnlock()
+	if !ok {
+		return nil
+	}
+
+	props := make(map[string]dbus.Variant)
+	props["label"] = dbus.MakeVariant(item.Label)
+	if item.Disabled {
+		props["enabled"] = dbus.MakeVariant(false)
+	} else {
+		props["enabled"] = dbus.MakeVariant(true)
+	}
+	if item.Type == MenuItemCheckbox {
+		if item.Checked {
+			props["toggle-state"] = dbus.MakeVariant(int32(1))
+		} else {
+			props["toggle-state"] = dbus.MakeVariant(int32(0))
+		}
+	}
+	if len(item.Icon) > 0 {
+		props["icon-data"] = dbus.MakeVariant(item.Icon)
+	}
+
+	updated := []menuItemProps{{ID: dbusID, Props: props}}
+	removed := []menuItemRemovedProps{}
+
+	return t.conn.Emit(menuPath, menuInterface+".ItemsPropertiesUpdated", updated, removed)
 }
 
 // ShowNotification displays a desktop notification via org.freedesktop.Notifications.
@@ -565,6 +611,13 @@ type menuLayout struct {
 type menuItemProps struct {
 	ID    int32
 	Props map[string]dbus.Variant
+}
+
+// menuItemRemovedProps is used for ItemsPropertiesUpdated removed-properties parameter.
+// D-Bus signature: (ias).
+type menuItemRemovedProps struct {
+	ID    int32
+	Props []string
 }
 
 // menuEvent represents a single event in EventGroup.

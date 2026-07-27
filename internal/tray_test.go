@@ -278,7 +278,9 @@ func TestTray_SetMenu(t *testing.T) {
 
 	mock := &mockPlatformTray{}
 	tray := NewTray(mock)
-	menu := NewMenu().Add("Item1", nil).Add("Item2", nil)
+	menu := NewMenu()
+	menu.Add("Item1", nil)
+	menu.Add("Item2", nil)
 
 	err := tray.SetMenu(menu)
 	if err != nil {
