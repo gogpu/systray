@@ -4,20 +4,22 @@
 
 ---
 
-## Current State: v0.1.1
+## Current State: v0.2.0
 
 All three platforms implemented and production-ready:
 
-- **Windows** — Shell_NotifyIconW, context menus, balloon notifications, dark mode auto-switching, explorer crash recovery
-- **macOS** — NSStatusBar/NSStatusItem via goffi ObjC runtime, template icons, NSMenu, NSUserNotification
-- **Linux** — D-Bus StatusNotifierItem (SNI) via godbus, com.canonical.dbusmenu, org.freedesktop.Notifications, watcher re-registration
-- **Public API** — builder pattern, multiple trays, click/doubleclick/rightclick handlers
-- **72 tests**, 84% coverage on public API
+- **Windows** — Shell_NotifyIconW, context menus, balloon notifications, dark mode auto-switching, explorer crash recovery, dynamic menu updates via SetMenuItemInfoW
+- **macOS** — NSStatusBar/NSStatusItem via goffi ObjC runtime, template icons, NSMenu, NSUserNotification, per-instance callback routing, dynamic menu updates via NSMenuItem setTitle/setState/setEnabled
+- **Linux** — D-Bus StatusNotifierItem (SNI) via godbus, com.canonical.dbusmenu, org.freedesktop.Notifications, watcher re-registration, private D-Bus connection per tray, ItemsPropertiesUpdated for dynamic updates
+- **Public API** — builder pattern, multiple trays, click/doubleclick/rightclick handlers, dynamic menu updates (SetLabel/SetChecked/SetDisabled/SetIcon)
+- **86 tests**, 85% coverage on public API
 
 ### Release History
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
+| **v0.2.0** | 2026-07-27 | Multi-tray fix (macOS/Linux), dynamic menu updates, breaking API (Add returns *MenuItem) |
+| **v0.1.2** | 2026-07-12 | deps: goffi v0.6.0, x/sys v0.47.0 |
 | **v0.1.1** | 2026-06-25 | deps: goffi v0.5.5, godbus v5.2.2 |
 | **v0.1.0** | 2026-04-30 | Initial release — all 3 platforms, menus, notifications, dark mode, 72 tests |
 
@@ -48,7 +50,7 @@ All three platforms implemented and production-ready:
 - [ ] Notification actions (buttons, reply field)
 - [ ] Notification images/icons
 - [ ] Menu item icons on all platforms
-- [ ] Dynamic menu updates (add/remove items at runtime)
+- [x] ~~Dynamic menu updates (add/remove items at runtime)~~ — shipped in v0.2.0
 - [ ] Accessibility — screen reader support for tray menus
 - [ ] Tray icon animation (rotating/pulsing for attention)
 

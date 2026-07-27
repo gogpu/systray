@@ -67,9 +67,9 @@ type linuxTray struct {
 	callbacks *Callbacks
 
 	menu      *Menu
-	menuItems map[int32]*MenuItem  // dbus id -> item for Event dispatch
-	itemIDs   map[uint32]int32     // MenuItem.ID() -> dbus menu item ID
-	menuRev   uint32               // layout revision for dbusmenu
+	menuItems map[int32]*MenuItem // dbus id -> item for Event dispatch
+	itemIDs   map[uint32]int32    // MenuItem.ID() -> dbus menu item ID
+	menuRev   uint32              // layout revision for dbusmenu
 
 	iconPixmap []dbusPixmap // cached ARGB pixmap
 	tooltip    string

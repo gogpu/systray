@@ -255,8 +255,8 @@ type win32Tray struct {
 	tooltip  string  // stored tooltip for explorer crash recovery
 
 	callbacks *Callbacks
-	menu      *Menu              // stored menu for rebuilding HMENU and dispatch
-	itemIDs   map[uint32]uint32  // MenuItem.ID() -> HMENU command ID (UINT) for UpdateItem
+	menu      *Menu             // stored menu for rebuilding HMENU and dispatch
+	itemIDs   map[uint32]uint32 // MenuItem.ID() -> HMENU command ID (UINT) for UpdateItem
 }
 
 // NewPlatformTray creates a Win32 system tray implementation.
