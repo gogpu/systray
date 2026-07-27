@@ -20,25 +20,27 @@ func TestMenu_Add(t *testing.T) {
 	t.Parallel()
 
 	called := false
-	m := NewMenu().Add("Open", func() { called = true })
+	m := NewMenu()
+	item := m.Add("Open", func() { called = true })
 
-	if m == nil {
+	if item == nil {
 		t.Fatal("Add returned nil")
 	}
 	if len(m.impl.Items) != 1 {
 		t.Fatalf("expected 1 item, got %d", len(m.impl.Items))
 	}
-
-	item := m.impl.Items[0]
-	if item.Label != "Open" {
-		t.Errorf("label = %q, want %q", item.Label, "Open")
+	if item.impl != m.impl.Items[0] {
+		t.Error("returned MenuItem should wrap the internal item appended to menu")
 	}
-	if item.Type != MenuItemNormal {
-		t.Errorf("type = %d, want MenuItemNormal (%d)", item.Type, MenuItemNormal)
+	if item.impl.Label != "Open" {
+		t.Errorf("label = %q, want %q", item.impl.Label, "Open")
+	}
+	if item.impl.Type != MenuItemNormal {
+		t.Errorf("type = %d, want MenuItemNormal (%d)", item.impl.Type, MenuItemNormal)
 	}
 
 	// Verify callback works.
-	item.OnClick()
+	item.impl.OnClick()
 	if !called {
 		t.Error("OnClick callback was not invoked")
 	}
@@ -60,21 +62,20 @@ func TestMenu_AddCheckbox(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			m := NewMenu().AddCheckbox(tt.label, tt.checked, nil)
+			m := NewMenu()
+			item := m.AddCheckbox(tt.label, tt.checked, nil)
 
 			if len(m.impl.Items) != 1 {
 				t.Fatalf("expected 1 item, got %d", len(m.impl.Items))
 			}
-
-			item := m.impl.Items[0]
-			if item.Label != tt.label {
-				t.Errorf("label = %q, want %q", item.Label, tt.label)
+			if item.impl.Label != tt.label {
+				t.Errorf("label = %q, want %q", item.impl.Label, tt.label)
 			}
-			if item.Type != MenuItemCheckbox {
-				t.Errorf("type = %d, want MenuItemCheckbox", item.Type)
+			if item.impl.Type != MenuItemCheckbox {
+				t.Errorf("type = %d, want MenuItemCheckbox", item.impl.Type)
 			}
-			if item.Checked != tt.checked {
-				t.Errorf("checked = %v, want %v", item.Checked, tt.checked)
+			if item.impl.Checked != tt.checked {
+				t.Errorf("checked = %v, want %v", item.impl.Checked, tt.checked)
 			}
 		})
 	}
@@ -94,28 +95,40 @@ func TestMenu_AddSeparator(t *testing.T) {
 	}
 }
 
+func TestMenu_AddSeparator_Chaining(t *testing.T) {
+	t.Parallel()
+
+	m := NewMenu()
+	result := m.AddSeparator()
+
+	if result != m {
+		t.Error("AddSeparator should return the same *Menu for chaining")
+	}
+}
+
 func TestMenu_AddSubmenu(t *testing.T) {
 	t.Parallel()
 
-	sub := NewMenu().Add("SubItem", nil)
-	m := NewMenu().AddSubmenu("More", sub)
+	sub := NewMenu()
+	sub.Add("SubItem", nil)
+
+	m := NewMenu()
+	item := m.AddSubmenu("More", sub)
 
 	if len(m.impl.Items) != 1 {
 		t.Fatalf("expected 1 item, got %d", len(m.impl.Items))
 	}
-
-	item := m.impl.Items[0]
-	if item.Label != "More" {
-		t.Errorf("label = %q, want %q", item.Label, "More")
+	if item.impl.Label != "More" {
+		t.Errorf("label = %q, want %q", item.impl.Label, "More")
 	}
-	if item.Type != MenuItemSubmenu {
-		t.Errorf("type = %d, want MenuItemSubmenu", item.Type)
+	if item.impl.Type != MenuItemSubmenu {
+		t.Errorf("type = %d, want MenuItemSubmenu", item.impl.Type)
 	}
-	if item.Submenu == nil {
+	if item.impl.Submenu == nil {
 		t.Fatal("submenu is nil")
 	}
-	if len(item.Submenu.Items) != 1 {
-		t.Errorf("submenu has %d items, want 1", len(item.Submenu.Items))
+	if len(item.impl.Submenu.Items) != 1 {
+		t.Errorf("submenu has %d items, want 1", len(item.impl.Submenu.Items))
 	}
 }
 
@@ -123,36 +136,37 @@ func TestMenu_AddWithIcon(t *testing.T) {
 	t.Parallel()
 
 	icon := []byte{0x89, 0x50, 0x4E, 0x47}
-	m := NewMenu().AddWithIcon("Paste", icon, nil)
+	m := NewMenu()
+	item := m.AddWithIcon("Paste", icon, nil)
 
 	if len(m.impl.Items) != 1 {
 		t.Fatalf("expected 1 item, got %d", len(m.impl.Items))
 	}
-
-	item := m.impl.Items[0]
-	if item.Label != "Paste" {
-		t.Errorf("label = %q, want %q", item.Label, "Paste")
+	if item.impl.Label != "Paste" {
+		t.Errorf("label = %q, want %q", item.impl.Label, "Paste")
 	}
-	if item.Type != MenuItemNormal {
-		t.Errorf("type = %d, want MenuItemNormal", item.Type)
+	if item.impl.Type != MenuItemNormal {
+		t.Errorf("type = %d, want MenuItemNormal", item.impl.Type)
 	}
-	if len(item.Icon) != 4 {
-		t.Errorf("icon length = %d, want 4", len(item.Icon))
+	if len(item.impl.Icon) != 4 {
+		t.Errorf("icon length = %d, want 4", len(item.impl.Icon))
 	}
 }
 
-func TestMenu_Chaining(t *testing.T) {
+func TestMenu_MultipleItems(t *testing.T) {
 	t.Parallel()
 
-	sub := NewMenu().Add("Recent1", nil).Add("Recent2", nil)
+	recentMenu := NewMenu()
+	recentMenu.Add("Recent1", nil)
+	recentMenu.Add("Recent2", nil)
 
-	m := NewMenu().
-		Add("Open", nil).
-		AddSeparator().
-		AddCheckbox("Auto-save", true, nil).
-		AddSubmenu("Recent", sub).
-		AddWithIcon("Copy", []byte{0xFF}, nil).
-		Add("Quit", nil)
+	m := NewMenu()
+	m.Add("Open", nil)
+	m.AddSeparator()
+	m.AddCheckbox("Auto-save", true, nil)
+	m.AddSubmenu("Recent", recentMenu)
+	m.AddWithIcon("Copy", []byte{0xFF}, nil)
+	m.Add("Quit", nil)
 
 	if len(m.impl.Items) != 6 {
 		t.Fatalf("expected 6 items, got %d", len(m.impl.Items))
@@ -186,28 +200,20 @@ func TestMenu_Chaining(t *testing.T) {
 	}
 }
 
-func TestMenu_Chaining_ReturnsSamePointer(t *testing.T) {
-	t.Parallel()
-
-	m := NewMenu()
-	m2 := m.Add("A", nil)
-	m3 := m2.AddSeparator()
-	m4 := m3.AddCheckbox("B", false, nil)
-	m5 := m4.AddSubmenu("C", NewMenu())
-	m6 := m5.AddWithIcon("D", []byte{0x01}, nil)
-
-	if m != m2 || m2 != m3 || m3 != m4 || m4 != m5 || m5 != m6 {
-		t.Error("all chaining methods should return the same *Menu pointer")
-	}
-}
-
 func TestMenu_NestedSubmenus(t *testing.T) {
 	t.Parallel()
 
-	level3 := NewMenu().Add("Leaf", nil)
-	level2 := NewMenu().AddSubmenu("Level3", level3)
-	level1 := NewMenu().AddSubmenu("Level2", level2)
-	root := NewMenu().AddSubmenu("Level1", level1)
+	level3 := NewMenu()
+	level3.Add("Leaf", nil)
+
+	level2 := NewMenu()
+	level2.AddSubmenu("Level3", level3)
+
+	level1 := NewMenu()
+	level1.AddSubmenu("Level2", level2)
+
+	root := NewMenu()
+	root.AddSubmenu("Level1", level1)
 
 	// Navigate 3 levels deep.
 	item := root.impl.Items[0]
@@ -246,5 +252,58 @@ func TestMenuItemType_Constants(t *testing.T) {
 	}
 	if MenuItemSubmenu != 3 {
 		t.Errorf("MenuItemSubmenu = %d, want 3", MenuItemSubmenu)
+	}
+}
+
+func TestMenuItem_SetLabel_Public(t *testing.T) {
+	t.Parallel()
+
+	m := NewMenu()
+	item := m.Add("Original", nil)
+
+	item.SetLabel("Updated")
+
+	if item.impl.Label != "Updated" {
+		t.Errorf("label = %q, want %q", item.impl.Label, "Updated")
+	}
+}
+
+func TestMenuItem_SetChecked_Public(t *testing.T) {
+	t.Parallel()
+
+	m := NewMenu()
+	item := m.AddCheckbox("Toggle", false, nil)
+
+	item.SetChecked(true)
+
+	if !item.impl.Checked {
+		t.Error("checked should be true")
+	}
+}
+
+func TestMenuItem_SetDisabled_Public(t *testing.T) {
+	t.Parallel()
+
+	m := NewMenu()
+	item := m.Add("Action", nil)
+
+	item.SetDisabled(true)
+
+	if !item.impl.Disabled {
+		t.Error("disabled should be true")
+	}
+}
+
+func TestMenuItem_SetIcon_Public(t *testing.T) {
+	t.Parallel()
+
+	m := NewMenu()
+	item := m.Add("Item", nil)
+
+	icon := []byte{0x89, 0x50}
+	item.SetIcon(icon)
+
+	if len(item.impl.Icon) != 2 {
+		t.Errorf("icon length = %d, want 2", len(item.impl.Icon))
 	}
 }

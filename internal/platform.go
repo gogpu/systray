@@ -21,6 +21,12 @@ type PlatformTray interface {
 // On Linux this runs the D-Bus event loop.
 // Call this from the main goroutine after Show().
 
+// MenuItemUpdater dispatches dynamic menu item updates to the native platform.
+// Implemented by platform tray types that support in-place menu item updates.
+type MenuItemUpdater interface {
+	UpdateItem(item *MenuItem) error
+}
+
 // Callbacks holds event handlers set by the public API layer.
 type Callbacks struct {
 	OnClick       func()
