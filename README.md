@@ -140,14 +140,25 @@ tray.SetIcon(icon).SetTooltip("Ready").SetMenu(menu).Show()
 ```go
 menu := systray.NewMenu()
 
-menu.Add("Label", onClick)                          // Normal item
-menu.AddCheckbox("Toggle", checked, onChange)        // Checkbox item
-menu.AddSeparator()                                 // Visual separator
-menu.AddSubmenu("More", submenu)                    // Nested submenu
-menu.AddWithIcon("Save", iconPNG, onClick)          // Item with icon
+item := menu.Add("Label", onClick)                   // Normal item → *MenuItem
+check := menu.AddCheckbox("Toggle", checked, onChange) // Checkbox → *MenuItem
+menu.AddSeparator()                                    // Separator → *Menu (chaining)
+sub := menu.AddSubmenu("More", submenu)                // Submenu → *MenuItem
+icon := menu.AddWithIcon("Save", iconPNG, onClick)     // With icon → *MenuItem
 ```
 
-All `Menu` methods return `*Menu` for chaining.
+`Add`, `AddCheckbox`, `AddSubmenu`, `AddWithIcon` return `*MenuItem` for dynamic updates. `AddSeparator` returns `*Menu` for chaining.
+
+### Dynamic Menu Updates
+
+Update menu items at runtime from any goroutine — changes are applied in-place via native platform APIs (no menu rebuild):
+
+```go
+item.SetLabel("New Label")     // Change display text
+check.SetChecked(false)        // Change checked state
+sub.SetDisabled(true)          // Disable/enable
+icon.SetIcon(newIconPNG)       // Change icon
+```
 
 ### Multiple Trays
 

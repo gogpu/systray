@@ -21,7 +21,7 @@ import (
 tray := systray.New()
 
 menu := systray.NewMenu()
-menu.Add("Hello", func() { fmt.Println("Hello!") })
+hello := menu.Add("Hello", func() { fmt.Println("Hello!") })
 menu.AddSeparator()
 menu.Add("Quit", func() {
     tray.Remove()
@@ -29,6 +29,10 @@ menu.Add("Quit", func() {
 })
 
 tray.SetIcon(iconPNG).SetTooltip("My App").SetMenu(menu).Show()
+
+// Dynamic updates from any goroutine:
+hello.SetLabel("Hello World!")
+hello.SetDisabled(true)
 
 if err := tray.Run(); err != nil {
     fmt.Println("error:", err)
@@ -39,7 +43,7 @@ if err := tray.Run(); err != nil {
 
 ```bash
 go build ./...                              # build
-go test ./...                               # test
+go test ./...                               # test (86 tests)
 golangci-lint run --timeout=5m              # lint
 cd examples/basic && go run .               # run example
 ```
@@ -47,12 +51,12 @@ cd examples/basic && go run .               # run example
 ## Architecture
 
 ```
-systray.go / menu.go           Public API (builder pattern, fluent chaining)
+systray.go / menu.go           Public API (MenuItem returned for dynamic updates)
 internal/tray.go                Core state management
-internal/platform.go            PlatformTray interface
-internal/platform_windows.go    Win32 Shell_NotifyIconW
-internal/platform_darwin.go     macOS NSStatusBar via goffi
-internal/platform_linux.go      D-Bus StatusNotifierItem
+internal/platform.go            PlatformTray + MenuItemUpdater interfaces
+internal/platform_windows.go    Win32 Shell_NotifyIconW + SetMenuItemInfoW
+internal/platform_darwin.go     macOS NSStatusBar via goffi + per-instance registry
+internal/platform_linux.go      D-Bus StatusNotifierItem + ItemsPropertiesUpdated
 internal/darwin/objc.go         ObjC runtime wrapper
 ```
 
@@ -62,18 +66,36 @@ Three-layer pattern (Qt6 QPlatformSystemTrayIcon): public API → platform inter
 
 | Platform | API | Dependency | Zero CGO |
 |----------|-----|-----------|----------|
-| Windows | Shell_NotifyIconW (shell32.dll) | golang.org/x/sys | Yes |
-| macOS | NSStatusBar / NSStatusItem | github.com/go-webgpu/goffi | Yes |
-| Linux | D-Bus StatusNotifierItem (SNI) | github.com/godbus/dbus/v5 | Yes |
+| Windows | Shell_NotifyIconW + SetMenuItemInfoW | golang.org/x/sys | Yes |
+| macOS | NSStatusBar / NSStatusItem / NSMenuItem | github.com/go-webgpu/goffi | Yes |
+| Linux | D-Bus StatusNotifierItem (SNI) + dbusmenu | github.com/godbus/dbus/v5 | Yes |
 
 ## Key Features
 
-- Multiple independent tray icons per application
+- Multiple independent tray icons per application (per-instance callback routing)
 - Context menus: items, checkboxes, separators, submenus, icons
+- **Dynamic menu updates:** `MenuItem.SetLabel()`, `SetChecked()`, `SetDisabled()`, `SetIcon()` — in-place native updates on all platforms
 - OS-level notifications (balloon tips / notification center / D-Bus)
 - Dark mode auto-switching (Windows) + template icons (macOS)
 - Click, double-click, right-click handlers
-- Builder pattern API with fluent chaining
+
+## Menu API
+
+`Menu.Add()`, `AddCheckbox()`, `AddSubmenu()`, `AddWithIcon()` return `*MenuItem` for dynamic updates. `AddSeparator()` returns `*Menu` for chaining.
+
+```go
+menu := systray.NewMenu()
+status := menu.Add("Status: idle", nil)
+check := menu.AddCheckbox("Auto-refresh", true, nil)
+menu.AddSeparator()
+sub := menu.AddSubmenu("Options", optionsMenu)
+menu.Add("Quit", quitFn)
+
+// Update at runtime:
+status.SetLabel("Status: running")
+check.SetChecked(false)
+sub.SetDisabled(true)
+```
 
 ## Community & Support
 
