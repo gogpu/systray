@@ -151,7 +151,7 @@ icon := menu.AddWithIcon("Save", iconPNG, onClick)     // With icon → *MenuIte
 
 ### Dynamic Menu Updates
 
-Update menu items at runtime from any goroutine — changes are applied in-place via native platform APIs (no menu rebuild):
+Update menu items at runtime from any goroutine — thread-safe, changes are applied in-place via native platform APIs (no menu rebuild). On macOS, updates are automatically dispatched to the main thread:
 
 ```go
 item.SetLabel("New Label")     // Change display text
