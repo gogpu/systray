@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.5] - 2026-08-05
+
+### Fixed
+
+- **macOS: `Run()` still not exiting after `Remove()`.** The v0.2.4 fix called `CFRunLoopStop` from `destroyOnMainThread`, but `destroyOnMainThread` was dispatched via `performSelectorOnMainThread:waitUntilDone:YES` — which itself requires the run loop to process events (chicken-and-egg). Fix: call `[NSApp stop:]` + `CFRunLoopStop()` directly from `Destroy()` (both are thread-safe) to wake and stop the run loop first, then dispatch cleanup with `waitUntilDone:NO`. ([#14](https://github.com/gogpu/systray/issues/14))
+
 ## [0.2.4] - 2026-08-05
 
 ### Fixed
@@ -89,7 +95,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Run() message loop for standalone usage
 - 72 tests, 84% public API coverage
 
-[Unreleased]: https://github.com/gogpu/systray/compare/v0.2.4...HEAD
+[Unreleased]: https://github.com/gogpu/systray/compare/v0.2.5...HEAD
+[0.2.5]: https://github.com/gogpu/systray/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/gogpu/systray/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/gogpu/systray/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/gogpu/systray/compare/v0.2.1...v0.2.2

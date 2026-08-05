@@ -799,19 +799,29 @@ func (t *darwinTray) Run() error {
 }
 
 // Destroy releases all resources associated with the tray icon.
-// Safe to call from any goroutine — AppKit calls are dispatched to the main
-// thread via performSelectorOnMainThread.
+// Safe to call from any goroutine.
 func (t *darwinTray) Destroy() {
 	if t.target.IsNil() {
 		return
 	}
 
-	// Queue the cleanup work for main thread execution.
+	// Queue cleanup for main thread execution.
 	t.pendingUpdates <- nil // nil sentinel signals destroy
 
+	// Stop the run loop first: [NSApp stop:nil] sets a flag (thread-safe),
+	// then CFRunLoopStop wakes the blocked mach_msg so [NSApp run] can check
+	// the flag and exit. This must happen BEFORE performSelectorOnMainThread
+	// because performSelector needs the run loop to be processing events.
+	if !t.nsApp.IsNil() {
+		t.nsApp.SendPtr(darwinSels.stop, 0)
+		darwin.CFRunLoopStop()
+	}
+
+	// Dispatch cleanup to main thread. waitUntilDone:NO because the run loop
+	// is about to exit — cleanup will execute as Run() unwinds.
 	drainSel := darwin.RegisterSelector("drainUpdates:")
 	darwin.MsgSend3Ptr(t.target, darwinSels.performSelectorOnMainThread,
-		uintptr(drainSel), 0, 1) // waitUntilDone:YES
+		uintptr(drainSel), 0, 0) // waitUntilDone:NO
 }
 
 // destroyOnMainThread performs the actual AppKit cleanup.
@@ -838,12 +848,4 @@ func (t *darwinTray) destroyOnMainThread() {
 	t.statusItem = 0
 	t.btn = 0
 	t.nsMenu = 0
-
-	// Stop the run loop if we started it.
-	// [NSApp stop:nil] sets a flag but [NSApp run] only checks it after
-	// processing an event. CFRunLoopStop wakes the blocked run loop immediately.
-	if !t.nsApp.IsNil() {
-		t.nsApp.SendPtr(darwinSels.stop, 0)
-		darwin.CFRunLoopStop()
-	}
 }
