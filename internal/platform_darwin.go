@@ -855,7 +855,8 @@ func (t *darwinTray) destroyOnMainThread() {
 	// Stop the shared application and wake its event loop with a real event.
 	// [NSApp run] only re-checks the stop flag after processing an event; a
 	// bare CFRunLoopStop wake is insufficient (verified on macOS 14-26).
-	// stop: is thread-safe, and postEvent:atStart:NO delivers the wake event.
+	// stop: is thread-safe, and postEvent:atStart:YES delivers the wake event
+	// at the head of the queue (gogpu reference pattern).
 	if !t.nsApp.IsNil() {
 		t.nsApp.SendPtr(darwinSels.stop, 0)
 		darwin.PostAppDefinedEvent(t.nsApp)

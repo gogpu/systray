@@ -682,7 +682,7 @@ func NewNSData(data []byte) ID {
 }
 
 // PostAppDefinedEvent creates an NSEvent of type NSApplicationDefined and
-// posts it to the application's event queue via [NSApp postEvent:atStart:NO].
+// posts it to the application's event queue via [NSApp postEvent:atStart:YES].
 //
 // This is the wake-up mechanism for [NSApp run]: the run loop only re-checks
 // the stop flag after dequeuing and processing a real event, so terminating
@@ -711,20 +711,23 @@ func PostAppDefinedEvent(app ID) {
 	// outside its "weird" set (NSInternalInconsistencyException otherwise).
 	const nsEventTypeApplicationDefined = 15
 
-	// +[NSEvent otherEventWithType:...] — NSPoint is a 16-byte HFA of two
-	// doubles, the same layout as NSSize (see nsSizeType), passed in D0/D1.
+	// +[NSEvent otherEventWithType:...] — argument types match the Apple
+	// header (and gogpu's createApplicationDefinedEvent reference): type and
+	// modifierFlags are NSUInteger (uint64), windowNumber/data1/data2 are
+	// NSInteger (int64), subtype is short (int16), and location is an NSPoint
+	// (16-byte HFA of two doubles — same layout as NSSize, see nsSizeType).
 	argTypes := []*types.TypeDescriptor{
 		types.PointerTypeDescriptor, // self (NSEvent class)
-		types.PointerTypeDescriptor, // _cmd
-		types.PointerTypeDescriptor, // type
+		types.PointerTypeDescriptor, // _cmd (SEL)
+		types.UInt64TypeDescriptor,  // type (NSUInteger)
 		nsSizeType,                  // location (NSPoint)
-		types.PointerTypeDescriptor, // modifierFlags
-		types.DoubleTypeDescriptor,  // timestamp
-		types.PointerTypeDescriptor, // windowNumber
+		types.UInt64TypeDescriptor,  // modifierFlags (NSUInteger)
+		types.DoubleTypeDescriptor,  // timestamp (NSTimeInterval)
+		types.SInt64TypeDescriptor,  // windowNumber (NSInteger)
 		types.PointerTypeDescriptor, // context (NSGraphicsContext*)
-		types.PointerTypeDescriptor, // subtype
-		types.PointerTypeDescriptor, // data1
-		types.PointerTypeDescriptor, // data2
+		types.SInt16TypeDescriptor,  // subtype (short)
+		types.SInt64TypeDescriptor,  // data1 (NSInteger)
+		types.SInt64TypeDescriptor,  // data2 (NSInteger)
 	}
 
 	cif := &types.CallInterface{}
@@ -736,15 +739,15 @@ func PostAppDefinedEvent(app ID) {
 	argBox := &struct {
 		self    uintptr
 		sel     uintptr
-		typ     uintptr
+		typ     uint64
 		loc     NSSize
-		flags   uintptr
+		flags   uint64
 		ts      float64
-		window  uintptr
+		window  int64
 		context uintptr
-		subtype uintptr
-		data1   uintptr
-		data2   uintptr
+		subtype int16
+		data1   int64
+		data2   int64
 	}{
 		self: uintptr(nsEventClass),
 		sel:  uintptr(selOther),
@@ -768,6 +771,8 @@ func PostAppDefinedEvent(app ID) {
 		return
 	}
 
-	// [app postEvent:event atStart:NO]
-	msgSend(app, selPost, ev, 0)
+	// [app postEvent:event atStart:YES] — atStart:YES puts the wake event at
+	// the head of the event queue so the loop stops immediately (gogpu
+	// reference pattern).
+	msgSend(app, selPost, ev, 1)
 }
