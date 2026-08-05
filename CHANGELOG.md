@@ -5,11 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.6] - 2026-08-05
+
+### Fixed
+
+- **macOS: `Run()` never returning after `Remove()`.** `CFRunLoopStop` (v0.2.4-v0.2.5) did not work — `[NSApp run]` only re-checks the stop flag after processing a real event, and a `CFRunLoopStop` wake returns no event. Fix by @nange: `destroyOnMainThread` now posts an `NSEventTypeApplicationDefined` event via `[NSApp postEvent:atStart:YES]` after `[NSApp stop:]`. The event wakes the loop, which sees the stop flag and exits. Verified on macOS 26 (Apple Silicon). Removes unused CoreFoundation `CFRunLoopStop` FFI. ([#14](https://github.com/gogpu/systray/issues/14), [#21](https://github.com/gogpu/systray/pull/21))
+
 ## [0.2.5] - 2026-08-05
 
 ### Fixed
 
-- **macOS: `Run()` never returning after `Remove()`.** The v0.2.4 fix (`[NSApp stop:]` + `CFRunLoopStop()` from `Destroy()`) did not work: `[NSApp run]` only re-checks the stop flag *after processing a real event*, and a `CFRunLoopStop` wake returns no event, so the loop went straight back to waiting. Fix: `Destroy()` dispatches cleanup to the main thread (`performSelectorOnMainThread:waitUntilDone:NO`); `destroyOnMainThread` then runs cleanup → `[NSApp stop:]` → posts an `NSEventTypeApplicationDefined` event (`postEvent:atStart:YES`, argument types matching the gogpu reference). The event wakes the loop, which sees the stop flag and exits — so `Run()` returns. Verified empirically on macOS 26 (Apple Silicon): `stop:` + posted event exits `[NSApp run]`; `stop:` + `CFRunLoopStop` does not. ([#14](https://github.com/gogpu/systray/issues/14))
+- **macOS: `Run()` exit attempt.** Call `[NSApp stop:]` + `CFRunLoopStop()` directly from `Destroy()` before `performSelectorOnMainThread`. Did not fully resolve — see v0.2.6.
 
 ## [0.2.4] - 2026-08-05
 
@@ -95,7 +101,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Run() message loop for standalone usage
 - 72 tests, 84% public API coverage
 
-[Unreleased]: https://github.com/gogpu/systray/compare/v0.2.5...HEAD
+[Unreleased]: https://github.com/gogpu/systray/compare/v0.2.6...HEAD
+[0.2.6]: https://github.com/gogpu/systray/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/gogpu/systray/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/gogpu/systray/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/gogpu/systray/compare/v0.2.2...v0.2.3
