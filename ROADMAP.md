@@ -18,6 +18,7 @@ All three platforms implemented and production-ready:
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
+| **v0.2.2** | 2026-08-05 | Fix Windows submenu dispatch, UpdateItem on submenus, Run() exit; IsChecked/IsDisabled getters |
 | **v0.2.1** | 2026-07-28 | Fix macOS crash on background goroutine menu updates (main thread dispatch) |
 | **v0.2.0** | 2026-07-27 | Multi-tray fix (macOS/Linux), dynamic menu updates, breaking API (Add returns *MenuItem) |
 | **v0.1.2** | 2026-07-12 | deps: goffi v0.6.0, x/sys v0.47.0 |
