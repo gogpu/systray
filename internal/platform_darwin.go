@@ -772,9 +772,10 @@ func (t *darwinTray) Bounds() (int, int, int, int) {
 	return 0, 0, 0, 0
 }
 
-// Run blocks the calling goroutine, running the Cocoa event loop.
-// If NSApplication is already initialized (e.g., systray is used inside a gogpu
-// app), this runs a local event polling loop instead of calling [NSApp run].
+// Run blocks the calling goroutine, running the Cocoa event loop ([NSApp run]).
+// It returns when the loop is stopped — i.e. when any tray's Destroy() has
+// run. Only call Run() once per process: the shared NSApplication event loop
+// serves all tray icons.
 func (t *darwinTray) Run() error {
 	initDarwinSels()
 	initDarwinClasses()
@@ -791,7 +792,8 @@ func (t *darwinTray) Run() error {
 	// Finish launching is required before the event loop can process events.
 	t.nsApp.Send(darwinSels.finishLaunching)
 
-	// Run the Cocoa event loop. This blocks until the app terminates.
+	// Run the Cocoa event loop. This blocks until [NSApp stop:] is sent and
+	// the wake event posted by Destroy() is processed.
 	// [NSApp run]
 	t.nsApp.Send(darwinSels.run)
 
@@ -799,7 +801,18 @@ func (t *darwinTray) Run() error {
 }
 
 // Destroy releases all resources associated with the tray icon.
-// Safe to call from any goroutine.
+// Safe to call from any goroutine, and never blocks the caller. The AppKit
+// cleanup and the event-loop stop are executed on the main thread
+// (drainUpdates:), so the ordering is deterministic:
+//
+//	cleanup → [NSApp stop:] → wake event → [NSApp run] returns → Run() returns
+//
+// The drain is dispatched with waitUntilDone:NO because Destroy must never
+// block: if the shared event loop has already exited (e.g. another tray was
+// removed first), the performSelector would never be serviced and a blocking
+// wait would hang the caller. While the loop is running, the drain is
+// serviced before the wake event it posts, so cleanup always completes before
+// Run() returns.
 func (t *darwinTray) Destroy() {
 	if t.target.IsNil() {
 		return
@@ -808,17 +821,7 @@ func (t *darwinTray) Destroy() {
 	// Queue cleanup for main thread execution.
 	t.pendingUpdates <- nil // nil sentinel signals destroy
 
-	// Stop the run loop first: [NSApp stop:nil] sets a flag (thread-safe),
-	// then CFRunLoopStop wakes the blocked mach_msg so [NSApp run] can check
-	// the flag and exit. This must happen BEFORE performSelectorOnMainThread
-	// because performSelector needs the run loop to be processing events.
-	if !t.nsApp.IsNil() {
-		t.nsApp.SendPtr(darwinSels.stop, 0)
-		darwin.CFRunLoopStop()
-	}
-
-	// Dispatch cleanup to main thread. waitUntilDone:NO because the run loop
-	// is about to exit — cleanup will execute as Run() unwinds.
+	// Dispatch cleanup to main thread. waitUntilDone:NO.
 	drainSel := darwin.RegisterSelector("drainUpdates:")
 	darwin.MsgSend3Ptr(t.target, darwinSels.performSelectorOnMainThread,
 		uintptr(drainSel), 0, 0) // waitUntilDone:NO
@@ -848,4 +851,14 @@ func (t *darwinTray) destroyOnMainThread() {
 	t.statusItem = 0
 	t.btn = 0
 	t.nsMenu = 0
+
+	// Stop the shared application and wake its event loop with a real event.
+	// [NSApp run] only re-checks the stop flag after processing an event; a
+	// bare CFRunLoopStop wake is insufficient (verified on macOS 14-26).
+	// stop: is thread-safe, and postEvent:atStart:YES delivers the wake event
+	// at the head of the queue (gogpu reference pattern).
+	if !t.nsApp.IsNil() {
+		t.nsApp.SendPtr(darwinSels.stop, 0)
+		darwin.PostAppDefinedEvent(t.nsApp)
+	}
 }
