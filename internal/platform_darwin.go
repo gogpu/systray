@@ -840,7 +840,10 @@ func (t *darwinTray) destroyOnMainThread() {
 	t.nsMenu = 0
 
 	// Stop the run loop if we started it.
+	// [NSApp stop:nil] sets a flag but [NSApp run] only checks it after
+	// processing an event. CFRunLoopStop wakes the blocked run loop immediately.
 	if !t.nsApp.IsNil() {
 		t.nsApp.SendPtr(darwinSels.stop, 0)
+		darwin.CFRunLoopStop()
 	}
 }

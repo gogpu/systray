@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.4] - 2026-08-05
+
+### Fixed
+
+- **Windows: `Run()` still not exiting after `Remove()`.** The v0.2.3 fix deleted the tray from `trayRegistry` before posting `WM_CLOSE`, so the `WM_DESTROY` handler couldn't find the tray and never called `PostQuitMessage`. Now `Destroy()` only posts `WM_CLOSE`; all cleanup (registry, HICON, HMENU, `PostQuitMessage`) happens in the `WM_DESTROY` handler on the correct thread. ([#14](https://github.com/gogpu/systray/issues/14))
+- **macOS: `Run()` still not exiting after `Remove()`.** `[NSApp stop:]` sets a flag but `[NSApp run]` only checks it after processing an event. Added `CFRunLoopStop()` via CoreFoundation FFI to immediately wake the blocked run loop (GLFW/SDL/Qt pattern). ([#14](https://github.com/gogpu/systray/issues/14))
+
 ## [0.2.3] - 2026-08-05
 
 ### Fixed
@@ -82,7 +89,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Run() message loop for standalone usage
 - 72 tests, 84% public API coverage
 
-[Unreleased]: https://github.com/gogpu/systray/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/gogpu/systray/compare/v0.2.4...HEAD
+[0.2.4]: https://github.com/gogpu/systray/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/gogpu/systray/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/gogpu/systray/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/gogpu/systray/compare/v0.2.0...v0.2.1

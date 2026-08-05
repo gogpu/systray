@@ -641,32 +641,12 @@ func (t *win32Tray) Destroy() {
 	// any thread). DefWindowProc handles WM_CLOSE by calling DestroyWindow on
 	// the correct thread, which triggers WM_DESTROY → PostQuitMessage → Run() exits.
 	if t.hwnd != 0 {
-		trayMu.Lock()
-		delete(trayRegistry, t.hwnd)
-		trayMu.Unlock()
-
 		ret, _, _ := procPostMessageW.Call(t.hwnd, 0x0010, 0, 0) // WM_CLOSE = 0x0010
 		if ret == 0 {
 			slog.Warn("systray: PostMessage WM_CLOSE failed during Destroy")
 		}
-		t.hwnd = 0
 	}
-
-	// Free HICON.
-	if t.hicon != 0 {
-		if ret, _, _ := procDestroyIcon.Call(t.hicon); ret == 0 {
-			slog.Warn("systray: DestroyIcon failed during cleanup")
-		}
-		t.hicon = 0
-	}
-
-	// Free HMENU.
-	if t.hmenu != 0 {
-		if ret, _, _ := procDestroyMenu.Call(t.hmenu); ret == 0 {
-			slog.Warn("systray: DestroyMenu failed during cleanup")
-		}
-		t.hmenu = 0
-	}
+	// Registry cleanup, HICON/HMENU free in WM_DESTROY handler (correct thread).
 }
 
 // makeNID builds a NOTIFYICONDATAW with current state.
@@ -911,6 +891,18 @@ func trayWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 		return ret
 
 	case wmDestroy:
+		trayMu.Lock()
+		delete(trayRegistry, hwnd)
+		trayMu.Unlock()
+		if t.hicon != 0 {
+			procDestroyIcon.Call(t.hicon)
+			t.hicon = 0
+		}
+		if t.hmenu != 0 {
+			procDestroyMenu.Call(t.hmenu)
+			t.hmenu = 0
+		}
+		t.hwnd = 0
 		procPostQuitMessage.Call(0)
 		return 0
 
