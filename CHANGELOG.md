@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **macOS: `Run()` still not exiting after `Remove()`.** The v0.2.4 fix called `CFRunLoopStop` from `destroyOnMainThread`, but `destroyOnMainThread` was dispatched via `performSelectorOnMainThread:waitUntilDone:YES` — which itself requires the run loop to process events (chicken-and-egg). Fix: call `[NSApp stop:]` + `CFRunLoopStop()` directly from `Destroy()` (both are thread-safe) to wake and stop the run loop first, then dispatch cleanup with `waitUntilDone:NO`. ([#14](https://github.com/gogpu/systray/issues/14))
+- **macOS: `Run()` never returning after `Remove()`.** The v0.2.4 fix (`[NSApp stop:]` + `CFRunLoopStop()` from `Destroy()`) did not work: `[NSApp run]` only re-checks the stop flag *after processing a real event*, and a `CFRunLoopStop` wake returns no event, so the loop went straight back to waiting. Fix: `Destroy()` dispatches cleanup to the main thread (`performSelectorOnMainThread:waitUntilDone:NO`); `destroyOnMainThread` then runs cleanup → `[NSApp stop:]` → posts an `NSEventTypeApplicationDefined` event (`postEvent:atStart:NO`). The event wakes the loop, which sees the stop flag and exits — so `Run()` returns. Verified empirically on macOS 26 (Apple Silicon): `stop:` + posted event exits `[NSApp run]`; `stop:` + `CFRunLoopStop` does not. ([#14](https://github.com/gogpu/systray/issues/14))
 
 ## [0.2.4] - 2026-08-05
 

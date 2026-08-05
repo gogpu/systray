@@ -681,64 +681,93 @@ func NewNSData(data []byte) ID {
 	)
 }
 
-// cfRunLoop holds CoreFoundation run loop function pointers.
-var cfRunLoop struct {
-	once             sync.Once
-	err              error
-	cfRunLoopGetMain unsafe.Pointer
-	cfRunLoopStop    unsafe.Pointer
-	cifGetMain       *types.CallInterface
-	cifStop          *types.CallInterface
-}
-
-func initCFRunLoop() error {
-	cfRunLoop.once.Do(func() {
-		cf, err := ffi.LoadLibrary(
-			"/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
-		if err != nil {
-			cfRunLoop.err = err
-			return
-		}
-		cfRunLoop.cfRunLoopGetMain, err = ffi.GetSymbol(cf, "CFRunLoopGetMain")
-		if err != nil {
-			cfRunLoop.err = err
-			return
-		}
-		cfRunLoop.cfRunLoopStop, err = ffi.GetSymbol(cf, "CFRunLoopStop")
-		if err != nil {
-			cfRunLoop.err = err
-			return
-		}
-		cfRunLoop.cifGetMain = &types.CallInterface{}
-		err = ffi.PrepareCallInterface(cfRunLoop.cifGetMain, types.DefaultCall,
-			types.PointerTypeDescriptor, []*types.TypeDescriptor{})
-		if err != nil {
-			cfRunLoop.err = err
-			return
-		}
-		cfRunLoop.cifStop = &types.CallInterface{}
-		err = ffi.PrepareCallInterface(cfRunLoop.cifStop, types.DefaultCall,
-			types.VoidTypeDescriptor, []*types.TypeDescriptor{types.PointerTypeDescriptor})
-		if err != nil {
-			cfRunLoop.err = err
-			return
-		}
-	})
-	return cfRunLoop.err
-}
-
-// CFRunLoopStop stops the main CoreFoundation run loop, immediately waking
-// [NSApp run]. Thread-safe per Apple documentation.
-func CFRunLoopStop() {
-	if err := initCFRunLoop(); err != nil {
+// PostAppDefinedEvent creates an NSEvent of type NSApplicationDefined and
+// posts it to the application's event queue via [NSApp postEvent:atStart:NO].
+//
+// This is the wake-up mechanism for [NSApp run]: the run loop only re-checks
+// the stop flag after dequeuing and processing a real event, so terminating
+// the loop requires delivering one (a bare CFRunLoopStop wake is not enough;
+// see darwinTray.Destroy). postEvent:atStart: is thread-safe per AppKit
+// documentation, and the application retains the posted event, so no release
+// is needed here.
+func PostAppDefinedEvent(app ID) {
+	if app == 0 {
 		return
 	}
-	var mainLoop uintptr
-	_, _ = ffi.CallFunction(cfRunLoop.cifGetMain, cfRunLoop.cfRunLoopGetMain,
-		unsafe.Pointer(&mainLoop), nil)
-	if mainLoop == 0 {
+	if err := initRuntime(); err != nil {
 		return
 	}
-	_, _ = ffi.CallFunction(cfRunLoop.cifStop, cfRunLoop.cfRunLoopStop,
-		nil, []unsafe.Pointer{unsafe.Pointer(&mainLoop)})
+
+	nsEventClass := GetClass("NSEvent")
+	if nsEventClass == 0 {
+		return
+	}
+
+	selOther := RegisterSelector(
+		"otherEventWithType:location:modifierFlags:timestamp:windowNumber:context:subtype:data1:data2:")
+	selPost := RegisterSelector("postEvent:atStart:")
+
+	// NSEventTypeApplicationDefined = 15. otherEventWithType: rejects types
+	// outside its "weird" set (NSInternalInconsistencyException otherwise).
+	const nsEventTypeApplicationDefined = 15
+
+	// +[NSEvent otherEventWithType:...] — NSPoint is a 16-byte HFA of two
+	// doubles, the same layout as NSSize (see nsSizeType), passed in D0/D1.
+	argTypes := []*types.TypeDescriptor{
+		types.PointerTypeDescriptor, // self (NSEvent class)
+		types.PointerTypeDescriptor, // _cmd
+		types.PointerTypeDescriptor, // type
+		nsSizeType,                  // location (NSPoint)
+		types.PointerTypeDescriptor, // modifierFlags
+		types.DoubleTypeDescriptor,  // timestamp
+		types.PointerTypeDescriptor, // windowNumber
+		types.PointerTypeDescriptor, // context (NSGraphicsContext*)
+		types.PointerTypeDescriptor, // subtype
+		types.PointerTypeDescriptor, // data1
+		types.PointerTypeDescriptor, // data2
+	}
+
+	cif := &types.CallInterface{}
+	if err := ffi.PrepareCallInterface(cif, types.DefaultCall,
+		types.PointerTypeDescriptor, argTypes); err != nil {
+		return
+	}
+
+	argBox := &struct {
+		self    uintptr
+		sel     uintptr
+		typ     uintptr
+		loc     NSSize
+		flags   uintptr
+		ts      float64
+		window  uintptr
+		context uintptr
+		subtype uintptr
+		data1   uintptr
+		data2   uintptr
+	}{
+		self: uintptr(nsEventClass),
+		sel:  uintptr(selOther),
+		typ:  nsEventTypeApplicationDefined,
+	}
+
+	var ev uintptr
+	if _, err := ffi.CallFunction(cif, rt.objcMsgSend, unsafe.Pointer(&ev), []unsafe.Pointer{
+		unsafe.Pointer(&argBox.self),
+		unsafe.Pointer(&argBox.sel),
+		unsafe.Pointer(&argBox.typ),
+		unsafe.Pointer(&argBox.loc),
+		unsafe.Pointer(&argBox.flags),
+		unsafe.Pointer(&argBox.ts),
+		unsafe.Pointer(&argBox.window),
+		unsafe.Pointer(&argBox.context),
+		unsafe.Pointer(&argBox.subtype),
+		unsafe.Pointer(&argBox.data1),
+		unsafe.Pointer(&argBox.data2),
+	}); err != nil || ev == 0 {
+		return
+	}
+
+	// [app postEvent:event atStart:NO]
+	msgSend(app, selPost, ev, 0)
 }
