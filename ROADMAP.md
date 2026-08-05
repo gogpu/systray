@@ -18,6 +18,7 @@ All three platforms implemented and production-ready:
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
+| **v0.2.3** | 2026-08-05 | Fix Destroy() from background goroutine (Windows PostMessage, macOS main thread dispatch) |
 | **v0.2.2** | 2026-08-05 | Fix Windows submenu dispatch, UpdateItem on submenus, Run() exit; IsChecked/IsDisabled getters |
 | **v0.2.1** | 2026-07-28 | Fix macOS crash on background goroutine menu updates (main thread dispatch) |
 | **v0.2.0** | 2026-07-27 | Multi-tray fix (macOS/Linux), dynamic menu updates, breaking API (Add returns *MenuItem) |
