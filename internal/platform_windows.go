@@ -119,10 +119,10 @@ var (
 	shell32  = windows.NewLazySystemDLL("shell32.dll")
 	kernel32 = windows.NewLazySystemDLL("kernel32.dll")
 
-	procShellNotifyIconW            = shell32.NewProc("Shell_NotifyIconW")
-	procRegisterClassExW            = user32.NewProc("RegisterClassExW")
-	procCreateWindowExW             = user32.NewProc("CreateWindowExW")
-	procDestroyWindow               = user32.NewProc("DestroyWindow")
+	procShellNotifyIconW = shell32.NewProc("Shell_NotifyIconW")
+	procRegisterClassExW = user32.NewProc("RegisterClassExW")
+	procCreateWindowExW  = user32.NewProc("CreateWindowExW")
+
 	procDefWindowProcW              = user32.NewProc("DefWindowProcW")
 	procSetForegroundWindow         = user32.NewProc("SetForegroundWindow")
 	procTrackPopupMenu              = user32.NewProc("TrackPopupMenu")
@@ -627,6 +627,8 @@ func (t *win32Tray) Run() error {
 }
 
 // Destroy removes the tray icon, destroys the window, and frees resources.
+// Safe to call from any goroutine — uses PostMessage to dispatch to the
+// window's thread where DestroyWindow is called via WM_DESTROY handler.
 func (t *win32Tray) Destroy() {
 	// Remove icon from tray.
 	if t.visible {
@@ -635,14 +637,17 @@ func (t *win32Tray) Destroy() {
 		}
 	}
 
-	// Unregister from the global registry.
+	// Post WM_CLOSE to the window. This is thread-safe (PostMessage works from
+	// any thread). DefWindowProc handles WM_CLOSE by calling DestroyWindow on
+	// the correct thread, which triggers WM_DESTROY → PostQuitMessage → Run() exits.
 	if t.hwnd != 0 {
 		trayMu.Lock()
 		delete(trayRegistry, t.hwnd)
 		trayMu.Unlock()
 
-		if ret, _, _ := procDestroyWindow.Call(t.hwnd); ret == 0 {
-			slog.Warn("systray: DestroyWindow failed during cleanup")
+		ret, _, _ := procPostMessageW.Call(t.hwnd, 0x0010, 0, 0) // WM_CLOSE = 0x0010
+		if ret == 0 {
+			slog.Warn("systray: PostMessage WM_CLOSE failed during Destroy")
 		}
 		t.hwnd = 0
 	}

@@ -614,10 +614,15 @@ func (t *darwinTray) UpdateItem(item *MenuItem) error {
 
 // applyPendingUpdates drains the pendingUpdates channel and applies AppKit
 // changes. MUST be called on the main thread (via drainUpdates: ObjC callback).
+// A nil item signals Destroy.
 func (t *darwinTray) applyPendingUpdates() {
 	for {
 		select {
 		case item := <-t.pendingUpdates:
+			if item == nil {
+				t.destroyOnMainThread()
+				return
+			}
 			t.applyItemUpdate(item)
 		default:
 			return
@@ -794,7 +799,24 @@ func (t *darwinTray) Run() error {
 }
 
 // Destroy releases all resources associated with the tray icon.
+// Safe to call from any goroutine — AppKit calls are dispatched to the main
+// thread via performSelectorOnMainThread.
 func (t *darwinTray) Destroy() {
+	if t.target.IsNil() {
+		return
+	}
+
+	// Queue the cleanup work for main thread execution.
+	t.pendingUpdates <- nil // nil sentinel signals destroy
+
+	drainSel := darwin.RegisterSelector("drainUpdates:")
+	darwin.MsgSend3Ptr(t.target, darwinSels.performSelectorOnMainThread,
+		uintptr(drainSel), 0, 1) // waitUntilDone:YES
+}
+
+// destroyOnMainThread performs the actual AppKit cleanup.
+// MUST be called on the main thread.
+func (t *darwinTray) destroyOnMainThread() {
 	// Remove the status item from the menu bar.
 	if !t.statusBar.IsNil() && !t.statusItem.IsNil() {
 		t.statusBar.SendPtr(darwinSels.removeStatusItem, t.statusItem.Ptr())
