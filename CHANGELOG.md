@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3] - 2026-08-05
+
+### Fixed
+
+- **Windows: `tray.Remove()` from background goroutine failed.** `DestroyWindow` must be called from the thread that owns the HWND. Replaced with `PostMessage(WM_CLOSE)` which is thread-safe — `DefWindowProc` handles `WM_CLOSE` → `DestroyWindow` → `WM_DESTROY` → `PostQuitMessage` on the correct thread. ([#14](https://github.com/gogpu/systray/issues/14))
+- **macOS: `tray.Remove()` from background goroutine crashed (SIGTRAP).** All AppKit calls (`removeStatusItem`, `release`, `stop`) must execute on the main thread. `Destroy()` now dispatches via `performSelectorOnMainThread` using a nil sentinel in the pending updates channel. ([#14](https://github.com/gogpu/systray/issues/14))
+
 ## [0.2.2] - 2026-08-05
 
 ### Fixed
@@ -75,7 +82,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Run() message loop for standalone usage
 - 72 tests, 84% public API coverage
 
-[Unreleased]: https://github.com/gogpu/systray/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/gogpu/systray/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/gogpu/systray/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/gogpu/systray/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/gogpu/systray/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/gogpu/systray/compare/v0.1.2...v0.2.0
