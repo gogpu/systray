@@ -20,6 +20,16 @@ type MenuItem struct {
 	impl *internal.MenuItem
 }
 
+// IsChecked returns the current checked state. Thread-safe.
+func (item *MenuItem) IsChecked() bool {
+	return item.impl.IsChecked()
+}
+
+// IsDisabled returns the current disabled state. Thread-safe.
+func (item *MenuItem) IsDisabled() bool {
+	return item.impl.IsDisabled()
+}
+
 // SetLabel changes the display text and updates the native menu item.
 func (item *MenuItem) SetLabel(label string) {
 	item.impl.SetLabel(label)
