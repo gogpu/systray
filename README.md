@@ -126,7 +126,7 @@ tray.OnRightClick(fn func())       // Right click handler
 // Notifications
 tray.ShowNotification(title, message string)  // OS-level notification
 
-// Position (for window placement near tray)
+// Position (Windows only; macOS/Linux return zeros)
 x, y, w, h := tray.Bounds()       // Tray icon screen position
 ```
 
@@ -158,6 +158,10 @@ item.SetLabel("New Label")     // Change display text
 check.SetChecked(false)        // Change checked state
 sub.SetDisabled(true)          // Disable/enable
 icon.SetIcon(newIconPNG)       // Change icon
+
+// Thread-safe getters
+if check.IsChecked() { ... }   // Read current state
+if sub.IsDisabled() { ... }
 ```
 
 ### Multiple Trays
@@ -230,28 +234,20 @@ Follows the Qt6 `QPlatformSystemTrayIcon` three-layer pattern. Each platform imp
 
 ## Usage with gogpu
 
-While systray is fully standalone, it integrates seamlessly with the [gogpu](https://github.com/gogpu/gogpu) application framework:
+While systray is fully standalone, it integrates with the [gogpu](https://github.com/gogpu/gogpu) application framework. systray runs its own message loop via `Run()`, or you can manage the lifecycle manually alongside gogpu's event loop:
 
 ```go
 import (
-    "github.com/gogpu/gogpu"
     "github.com/gogpu/systray"
 )
 
-app := gogpu.NewApp(config)
-
-// Create tray through the app (lifecycle managed automatically)
+// Create tray icon alongside your gogpu app
 tray := systray.New()
 tray.SetIcon(icon).SetMenu(menu).Show()
 
-// Minimize to tray pattern
-app.SetQuitBehavior(gogpu.QuitOnExplicitQuit)
-app.OnClose(func() bool {
-    app.Hide()       // hide window instead of closing
-    return false     // reject close
-})
+// Show/hide window on tray click
 tray.OnClick(func() {
-    app.Show()       // restore window on tray click
+    fmt.Println("Tray clicked — toggle window")
 })
 ```
 
@@ -261,14 +257,15 @@ tray.OnClick(func() {
 |:--------|:------------:|:------------------:|:---------------:|
 | Pure Go (zero CGO) | **Yes** | No (CGO on macOS/Linux) | No (CGO on macOS/Linux) |
 | Multiple trays | **Yes** | No (single global) | No (single global) |
-| Dark mode icons | **Yes** | No | No |
-| Template icons (macOS) | **Yes** | No | Yes |
+| Dynamic menu updates | **Yes** (SetLabel/SetChecked/SetDisabled) | Yes (SetTitle/Check/Uncheck) | Yes (SetTitle/Check/Uncheck) |
+| Dark mode auto-switch | **Yes** (Windows) | No | No |
+| Template icons (macOS) | **Yes** | Yes | Yes |
 | Nested menus | **Yes** | Yes | Yes |
-| Menu item icons | **Yes** | No | No |
+| Menu item icons | **Yes** | Yes | Yes |
 | Notifications | **Yes** | No | No |
 | Builder pattern | **Yes** | No | No |
 | Built-in message loop | **Yes** | Yes | Yes |
-| Wayland support | **Yes** (D-Bus SNI) | No | Partial |
+| Wayland support | **Yes** (D-Bus SNI) | Yes (D-Bus SNI) | Yes (D-Bus SNI) |
 
 ## Contributing
 
@@ -276,7 +273,7 @@ We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## Part of the GoGPU Ecosystem
 
-systray is part of the [GoGPU](https://github.com/gogpu) ecosystem — 790K+ lines of Pure Go, zero CGO. A GPU computing platform with a WebGPU implementation, shader compiler, 2D graphics library, and GUI toolkit.
+systray is part of the [GoGPU](https://github.com/gogpu) ecosystem — 1.2M+ lines of Pure Go, zero CGO. A GPU computing platform with a WebGPU implementation, shader compiler, 2D graphics library, and GUI toolkit.
 
 | Library | Purpose |
 |:--------|:--------|
@@ -284,7 +281,7 @@ systray is part of the [GoGPU](https://github.com/gogpu) ecosystem — 790K+ lin
 | [wgpu](https://github.com/gogpu/wgpu) | Pure Go WebGPU (Vulkan/Metal/DX12/GLES) |
 | [naga](https://github.com/gogpu/naga) | Shader compiler (WGSL to SPIR-V/MSL/GLSL/HLSL/DXIL) |
 | [gg](https://github.com/gogpu/gg) | 2D graphics with GPU acceleration |
-| [ui](https://github.com/gogpu/ui) | GUI toolkit (22+ widgets, 4 themes) |
+| [ui](https://github.com/gogpu/ui) | GUI toolkit (27 widgets, 4 themes) |
 | **[systray](https://github.com/gogpu/systray)** | **System tray (this library)** |
 
 ## License
