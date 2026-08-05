@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-08-05
+
+### Fixed
+
+- **Windows: submenu clicks dispatched to wrong callback.** `TrackPopupMenu` returned per-HMENU positional IDs (1,2,3 per submenu level), causing submenu items to invoke root-menu callbacks. Replaced with globally unique command IDs + flat `cmdItems` dispatch map across all menu levels. ([#12](https://github.com/gogpu/systray/issues/12))
+- **Windows: `SetLabel`/`SetChecked`/`SetDisabled` had no effect on submenu items.** `SetMenuItemInfoW` searched only the root HMENU. Now stores per-item HMENU handle in `itemHMenus` map for correct submenu targeting. ([#13](https://github.com/gogpu/systray/issues/13))
+- **Windows: `tray.Remove()` left process running.** `Run()` never returned because `DestroyWindow` posts `WM_DESTROY` but `GetMessage` only exits on `WM_QUIT`. Added `PostQuitMessage(0)` in `WM_DESTROY` handler. ([#14](https://github.com/gogpu/systray/issues/14))
+
+### Added
+
+- `MenuItem.IsChecked()` and `MenuItem.IsDisabled()` — thread-safe getters for current state. ([#15](https://github.com/gogpu/systray/issues/15))
+
+### Changed
+
+- **deps:** goffi v0.6.2 → v0.6.3
+
 ## [0.2.1] - 2026-07-28
 
 ### Fixed
@@ -59,7 +75,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Run() message loop for standalone usage
 - 72 tests, 84% public API coverage
 
-[Unreleased]: https://github.com/gogpu/systray/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/gogpu/systray/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/gogpu/systray/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/gogpu/systray/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/gogpu/systray/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/gogpu/systray/compare/v0.1.1...v0.1.2

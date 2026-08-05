@@ -39,6 +39,22 @@ type MenuItem struct {
 // ID returns the unique identifier for this menu item.
 func (item *MenuItem) ID() uint32 { return item.id }
 
+// IsChecked returns the current checked state. Thread-safe.
+func (item *MenuItem) IsChecked() bool {
+	item.mu.Lock()
+	v := item.Checked
+	item.mu.Unlock()
+	return v
+}
+
+// IsDisabled returns the current disabled state. Thread-safe.
+func (item *MenuItem) IsDisabled() bool {
+	item.mu.Lock()
+	v := item.Disabled
+	item.mu.Unlock()
+	return v
+}
+
 // SetLabel changes the display text and dispatches the update to the native platform.
 func (item *MenuItem) SetLabel(label string) {
 	item.mu.Lock()
