@@ -680,3 +680,65 @@ func NewNSData(data []byte) ID {
 		uintptr(len(data)),
 	)
 }
+
+// cfRunLoop holds CoreFoundation run loop function pointers.
+var cfRunLoop struct {
+	once             sync.Once
+	err              error
+	cfRunLoopGetMain unsafe.Pointer
+	cfRunLoopStop    unsafe.Pointer
+	cifGetMain       *types.CallInterface
+	cifStop          *types.CallInterface
+}
+
+func initCFRunLoop() error {
+	cfRunLoop.once.Do(func() {
+		cf, err := ffi.LoadLibrary(
+			"/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+		if err != nil {
+			cfRunLoop.err = err
+			return
+		}
+		cfRunLoop.cfRunLoopGetMain, err = ffi.GetSymbol(cf, "CFRunLoopGetMain")
+		if err != nil {
+			cfRunLoop.err = err
+			return
+		}
+		cfRunLoop.cfRunLoopStop, err = ffi.GetSymbol(cf, "CFRunLoopStop")
+		if err != nil {
+			cfRunLoop.err = err
+			return
+		}
+		cfRunLoop.cifGetMain = &types.CallInterface{}
+		err = ffi.PrepareCallInterface(cfRunLoop.cifGetMain, types.DefaultCall,
+			types.PointerTypeDescriptor, []*types.TypeDescriptor{})
+		if err != nil {
+			cfRunLoop.err = err
+			return
+		}
+		cfRunLoop.cifStop = &types.CallInterface{}
+		err = ffi.PrepareCallInterface(cfRunLoop.cifStop, types.DefaultCall,
+			types.VoidTypeDescriptor, []*types.TypeDescriptor{types.PointerTypeDescriptor})
+		if err != nil {
+			cfRunLoop.err = err
+			return
+		}
+	})
+	return cfRunLoop.err
+}
+
+// CFRunLoopStop stops the main CoreFoundation run loop, immediately waking
+// [NSApp run]. Thread-safe per Apple documentation.
+func CFRunLoopStop() {
+	if err := initCFRunLoop(); err != nil {
+		return
+	}
+	var mainLoop uintptr
+	_, _ = ffi.CallFunction(cfRunLoop.cifGetMain, cfRunLoop.cfRunLoopGetMain,
+		unsafe.Pointer(&mainLoop), nil)
+	if mainLoop == 0 {
+		return
+	}
+	_, _ = ffi.CallFunction(cfRunLoop.cifStop, cfRunLoop.cfRunLoopStop,
+		nil, []unsafe.Pointer{unsafe.Pointer(&mainLoop)})
+}
