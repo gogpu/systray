@@ -18,6 +18,7 @@ All three platforms implemented and production-ready:
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
+| **v0.2.8** | 2026-08-06 | Windows submenu container UpdateItem: position-based lookup (PR #27 by @nange) |
 | **v0.2.7** | 2026-08-06 | macOS submenu UpdateItem: nsItems map replaces itemWithTag (PR #24 by @nange) |
 | **v0.2.6** | 2026-08-05 | macOS Run() exit: PostAppDefinedEvent (PR #21 by @nange) |
 | **v0.2.5** | 2026-08-05 | macOS Run() exit attempt: stop+CFRunLoopStop |
