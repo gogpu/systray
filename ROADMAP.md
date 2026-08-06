@@ -18,6 +18,9 @@ All three platforms implemented and production-ready:
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
+| **v0.2.7** | 2026-08-06 | macOS submenu UpdateItem: nsItems map replaces itemWithTag (PR #24 by @nange) |
+| **v0.2.6** | 2026-08-05 | macOS Run() exit: PostAppDefinedEvent (PR #21 by @nange) |
+| **v0.2.5** | 2026-08-05 | macOS Run() exit attempt: stop+CFRunLoopStop |
 | **v0.2.4** | 2026-08-05 | Fix Run() exit: Windows WM_DESTROY cleanup ordering, macOS CFRunLoopStop wake |
 | **v0.2.3** | 2026-08-05 | Fix Destroy() from background goroutine (Windows PostMessage, macOS main thread dispatch) |
 | **v0.2.2** | 2026-08-05 | Fix Windows submenu dispatch, UpdateItem on submenus, Run() exit; IsChecked/IsDisabled getters |
