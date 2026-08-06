@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.7] - 2026-08-06
+
+### Fixed
+
+- **macOS: `SetLabel`/`SetChecked`/`SetDisabled` no-op for submenu items.** `applyItemUpdate` used `[NSMenu itemWithTag:]` which only searches the root menu — items inside submenus were silently dropped. Now stores `darwin.ID` (NSMenuItem handle) directly in `nsItems` map during `buildNSMenu`, including submenu containers. O(1) lookup replaces O(n) tag search. By @nange. ([#23](https://github.com/gogpu/systray/issues/23), [#24](https://github.com/gogpu/systray/pull/24))
+
 ## [0.2.6] - 2026-08-05
 
 ### Fixed
@@ -101,7 +107,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Run() message loop for standalone usage
 - 72 tests, 84% public API coverage
 
-[Unreleased]: https://github.com/gogpu/systray/compare/v0.2.6...HEAD
+[Unreleased]: https://github.com/gogpu/systray/compare/v0.2.7...HEAD
+[0.2.7]: https://github.com/gogpu/systray/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/gogpu/systray/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/gogpu/systray/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/gogpu/systray/compare/v0.2.3...v0.2.4
