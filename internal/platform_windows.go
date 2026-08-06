@@ -259,6 +259,7 @@ type win32Tray struct {
 	menu       *Menu                // stored menu for rebuilding HMENU and dispatch
 	itemIDs    map[uint32]uint32    // MenuItem.ID() -> HMENU command ID (UINT) for UpdateItem
 	itemHMenus map[uint32]uintptr   // MenuItem.ID() -> owning HMENU handle (for submenu UpdateItem)
+	itemPos    map[uint32]uint32    // MenuItem.ID() -> position within owning HMENU (submenu containers, fByPosition lookup)
 	cmdItems   map[uint32]*MenuItem // command ID -> MenuItem for click dispatch (flat, includes submenus)
 	nextCmdID  uint32               // global command ID counter (1-based, increments across submenus)
 }
@@ -269,6 +270,7 @@ func NewPlatformTray(callbacks *Callbacks) PlatformTray {
 		callbacks:  callbacks,
 		itemIDs:    make(map[uint32]uint32),
 		itemHMenus: make(map[uint32]uintptr),
+		itemPos:    make(map[uint32]uint32),
 		cmdItems:   make(map[uint32]*MenuItem),
 	}
 }
@@ -449,6 +451,7 @@ func (t *win32Tray) SetMenu(menu *Menu) error {
 	t.menu = menu
 	t.itemIDs = make(map[uint32]uint32)
 	t.itemHMenus = make(map[uint32]uintptr)
+	t.itemPos = make(map[uint32]uint32)
 	t.cmdItems = make(map[uint32]*MenuItem)
 	t.nextCmdID = 1
 
@@ -739,6 +742,7 @@ func (t *win32Tray) buildHMENU(menu *Menu) (uintptr, error) {
 // Each non-separator, non-submenu item gets a globally unique command ID
 // from t.nextCmdID, ensuring submenus dispatch correctly.
 func (t *win32Tray) populateMenu(hmenu uintptr, menu *Menu) error {
+	pos := 0
 	for i, item := range menu.Items {
 		switch item.Type {
 		case MenuItemSeparator:
@@ -751,6 +755,7 @@ func (t *win32Tray) populateMenu(hmenu uintptr, menu *Menu) error {
 			if ret == 0 {
 				return fmt.Errorf("AppendMenuW separator failed at index %d", i)
 			}
+			pos++
 
 		case MenuItemSubmenu:
 			if item.Submenu == nil {
@@ -780,6 +785,13 @@ func (t *win32Tray) populateMenu(hmenu uintptr, menu *Menu) error {
 				return fmt.Errorf("AppendMenuW submenu %q failed", item.Label)
 			}
 
+			// MF_POPUP items carry the submenu HMENU in the ID slot instead of
+			// a command ID, so SetMenuItemInfoW cannot find them by ID. Record
+			// the owning HMENU and position for fByPosition-based updates.
+			t.itemHMenus[item.ID()] = hmenu
+			t.itemPos[item.ID()] = uint32(pos)
+			pos++
+
 		default: // MenuItemNormal, MenuItemCheckbox
 			label, err := windows.UTF16PtrFromString(item.Label)
 			if err != nil {
@@ -806,6 +818,7 @@ func (t *win32Tray) populateMenu(hmenu uintptr, menu *Menu) error {
 			t.itemIDs[item.ID()] = cmdID
 			t.itemHMenus[item.ID()] = hmenu
 			t.cmdItems[cmdID] = item
+			pos++
 		}
 	}
 	return nil
@@ -813,14 +826,25 @@ func (t *win32Tray) populateMenu(hmenu uintptr, menu *Menu) error {
 
 // UpdateItem updates a single menu item's native properties in-place via SetMenuItemInfoW.
 // Uses the per-item HMENU handle to correctly update items in submenus.
+// Submenu containers (MF_POPUP items) carry their submenu HMENU in the ID slot
+// instead of a command ID, so they are resolved by position (fByPosition=TRUE).
 func (t *win32Tray) UpdateItem(item *MenuItem) error {
-	cmdID, ok := t.itemIDs[item.ID()]
-	if !ok {
-		return nil
-	}
 	hmenu, ok := t.itemHMenus[item.ID()]
 	if !ok || hmenu == 0 {
 		return nil
+	}
+
+	var uItem uintptr
+	byPosition := false
+	if pos, isContainer := t.itemPos[item.ID()]; isContainer {
+		uItem = uintptr(pos)
+		byPosition = true
+	} else {
+		cmdID, ok := t.itemIDs[item.ID()]
+		if !ok {
+			return nil
+		}
+		uItem = uintptr(cmdID)
 	}
 
 	label, err := windows.UTF16PtrFromString(item.Label)
@@ -843,7 +867,11 @@ func (t *win32Tray) UpdateItem(item *MenuItem) error {
 		dwTypeData: uintptr(unsafe.Pointer(label)),
 	}
 
-	ret, _, _ := procSetMenuItemInfoW.Call(hmenu, uintptr(cmdID), 0, uintptr(unsafe.Pointer(&mii)))
+	fByPosition := uintptr(0)
+	if byPosition {
+		fByPosition = 1
+	}
+	ret, _, _ := procSetMenuItemInfoW.Call(hmenu, uItem, fByPosition, uintptr(unsafe.Pointer(&mii)))
 	if ret == 0 {
 		return fmt.Errorf("SetMenuItemInfoW failed for item %q", item.Label)
 	}
