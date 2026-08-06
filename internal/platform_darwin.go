@@ -531,6 +531,14 @@ func (t *darwinTray) buildNSMenu(title string, menu *Menu, counter *int) darwin.
 
 			nsMenu.SendPtr(darwinSels.addItem, nsItem.Ptr())
 
+			// Store the submenu container handle for dynamic updates.
+			// Submenu containers are NSMenuItems like any other — users can
+			// call SetLabel/SetDisabled on the *MenuItem returned by
+			// AddSubmenu, so it must be resolvable via nsItems.
+			t.menuMu.Lock()
+			t.nsItems[item.ID()] = nsItem
+			t.menuMu.Unlock()
+
 		default:
 			// Normal or checkbox item.
 			idx := *counter
