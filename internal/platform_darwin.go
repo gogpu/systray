@@ -71,7 +71,6 @@ var darwinSels struct {
 	initWithTitleActionKeyEquiv darwin.SEL // initWithTitle:action:keyEquivalent:
 	setState                    darwin.SEL // setState:
 	setEnabled                  darwin.SEL // setEnabled:
-	itemWithTag                 darwin.SEL // itemWithTag:
 
 	// NSObject main-thread dispatch
 	performSelectorOnMainThread darwin.SEL // performSelectorOnMainThread:withObject:waitUntilDone:
@@ -150,7 +149,6 @@ func initDarwinSels() {
 			"initWithTitle:action:keyEquivalent:")
 		darwinSels.setState = darwin.RegisterSelector("setState:")
 		darwinSels.setEnabled = darwin.RegisterSelector("setEnabled:")
-		darwinSels.itemWithTag = darwin.RegisterSelector("itemWithTag:")
 		darwinSels.performSelectorOnMainThread = darwin.RegisterSelector(
 			"performSelectorOnMainThread:withObject:waitUntilDone:")
 
@@ -198,7 +196,7 @@ type darwinTray struct {
 	// menuActions maps menu item indices to their callbacks.
 	// Populated when SetMenu builds the NSMenu hierarchy.
 	menuActions    map[int]func()
-	itemTags       map[uint32]int // item.ID() -> NSMenuItem tag for UpdateItem lookup
+	nsItems        map[uint32]darwin.ID // item.ID() -> NSMenuItem handle (incl. submenus)
 	menuMu         sync.Mutex
 	pendingUpdates chan *MenuItem // buffered channel for main-thread dispatch
 }
@@ -223,7 +221,7 @@ func NewPlatformTray(callbacks *Callbacks) PlatformTray {
 	return &darwinTray{
 		callbacks:      callbacks,
 		menuActions:    make(map[int]func()),
-		itemTags:       make(map[uint32]int),
+		nsItems:        make(map[uint32]darwin.ID),
 		pendingUpdates: make(chan *MenuItem, 64),
 	}
 }
@@ -463,9 +461,9 @@ func (t *darwinTray) SetMenu(menu *Menu) error {
 
 	// Build the NSMenu hierarchy.
 	t.menuMu.Lock()
-	// Clear old actions and tag mappings.
+	// Clear old actions and item handle mappings.
 	t.menuActions = make(map[int]func())
-	t.itemTags = make(map[uint32]int)
+	t.nsItems = make(map[uint32]darwin.ID)
 	t.menuMu.Unlock()
 
 	counter := menuItemCallbackBaseID
@@ -533,6 +531,14 @@ func (t *darwinTray) buildNSMenu(title string, menu *Menu, counter *int) darwin.
 
 			nsMenu.SendPtr(darwinSels.addItem, nsItem.Ptr())
 
+			// Store the submenu container handle for dynamic updates.
+			// Submenu containers are NSMenuItems like any other — users can
+			// call SetLabel/SetDisabled on the *MenuItem returned by
+			// AddSubmenu, so it must be resolvable via nsItems.
+			t.menuMu.Lock()
+			t.nsItems[item.ID()] = nsItem
+			t.menuMu.Unlock()
+
 		default:
 			// Normal or checkbox item.
 			idx := *counter
@@ -571,12 +577,14 @@ func (t *darwinTray) buildNSMenu(title string, menu *Menu, counter *int) darwin.
 				}
 			}
 
-			// Register Go callback and map item ID to tag for UpdateItem lookup.
+			// Register Go callback and map item ID to NSMenuItem handle for
+			// UpdateItem lookup. itemWithTag: only searches the root menu, so
+			// items inside submenus must be resolved via this map.
 			t.menuMu.Lock()
 			if item.OnClick != nil {
 				t.menuActions[idx] = item.OnClick
 			}
-			t.itemTags[item.ID()] = idx
+			t.nsItems[item.ID()] = nsItem
 			t.menuMu.Unlock()
 
 			nsMenu.SendPtr(darwinSels.addItem, nsItem.Ptr())
@@ -595,7 +603,7 @@ func (t *darwinTray) UpdateItem(item *MenuItem) error {
 	}
 
 	t.menuMu.Lock()
-	_, ok := t.itemTags[item.ID()]
+	_, ok := t.nsItems[item.ID()]
 	t.menuMu.Unlock()
 	if !ok {
 		return nil
@@ -634,14 +642,9 @@ func (t *darwinTray) applyPendingUpdates() {
 // MUST be called on the main thread.
 func (t *darwinTray) applyItemUpdate(item *MenuItem) {
 	t.menuMu.Lock()
-	tag, ok := t.itemTags[item.ID()]
+	nsItem, ok := t.nsItems[item.ID()]
 	t.menuMu.Unlock()
-	if !ok {
-		return
-	}
-
-	nsItem := t.nsMenu.SendInt(darwinSels.itemWithTag, int64(tag))
-	if nsItem.IsNil() {
+	if !ok || nsItem.IsNil() {
 		return
 	}
 
