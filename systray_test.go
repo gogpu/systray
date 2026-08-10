@@ -188,6 +188,25 @@ func TestSystemTray_SetMenu(t *testing.T) {
 	}
 }
 
+func TestSystemTray_SetMenuNilRemovesMenu(t *testing.T) {
+	t.Parallel()
+
+	tray, mock := newTestTray(t)
+	tray.SetMenu(NewMenu())
+
+	result := tray.SetMenu(nil)
+
+	if result != tray {
+		t.Error("SetMenu should return the same *SystemTray for chaining")
+	}
+	if tray.impl.Menu != nil {
+		t.Error("tray menu should be nil after SetMenu(nil)")
+	}
+	if mock.menu != nil {
+		t.Error("platform menu should be nil after SetMenu(nil)")
+	}
+}
+
 // --- OnClick / OnDoubleClick / OnRightClick tests ---
 
 func TestSystemTray_OnClick(t *testing.T) {

@@ -116,7 +116,7 @@ tray.SetTemplateIcon(png []byte)   // macOS template image (monochrome)
 
 // Text and menu
 tray.SetTooltip(text string)       // Hover tooltip
-tray.SetMenu(menu *Menu)           // Attach context menu
+tray.SetMenu(menu *Menu)           // Attach context menu (nil removes it)
 
 // Events
 tray.OnClick(fn func())            // Left click handler

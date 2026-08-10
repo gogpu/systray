@@ -60,9 +60,14 @@ func (t *SystemTray) SetTooltip(text string) *SystemTray {
 	return t
 }
 
-// SetMenu attaches a context menu to the tray icon.
+// SetMenu attaches a context menu to the tray icon. Pass nil to remove the
+// current menu.
 func (t *SystemTray) SetMenu(menu *Menu) *SystemTray {
-	_ = t.impl.SetMenu(menu.impl)
+	var internalMenu *internal.Menu
+	if menu != nil {
+		internalMenu = menu.impl
+	}
+	_ = t.impl.SetMenu(internalMenu)
 	return t
 }
 
