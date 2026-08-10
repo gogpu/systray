@@ -197,7 +197,7 @@ type darwinTray struct {
 	menuActions    map[int]func()
 	nsItems        map[uint32]darwin.ID // item.ID() -> NSMenuItem handle (incl. submenus)
 	menuMu         sync.Mutex
-	pendingUpdates chan *MenuItem // buffered channel for main-thread dispatch
+	pendingUpdates chan menuItemSnapshot // buffered channel for main-thread dispatch
 }
 
 // goSystrayTargetClass is the custom ObjC class registered once for click handling.
@@ -222,7 +222,7 @@ func NewPlatformTray(callbacks *Callbacks) PlatformTray {
 		callbacks:      callbacks,
 		menuActions:    make(map[int]func()),
 		nsItems:        make(map[uint32]darwin.ID),
-		pendingUpdates: make(chan *MenuItem, 64),
+		pendingUpdates: make(chan menuItemSnapshot, 64),
 	}
 }
 
@@ -531,7 +531,8 @@ func (t *darwinTray) buildNSMenu(title string, menu *Menu, counter *int) darwin.
 	menuClickedSel := darwin.RegisterSelector("menuItemClicked:")
 
 	for _, item := range menu.Items {
-		switch item.Type {
+		snapshot := item.snapshot()
+		switch snapshot.itemType {
 		case MenuItemSeparator:
 			sep := darwinClasses.NSMenuItem.Send(darwinSels.separatorItem)
 			if !sep.IsNil() {
@@ -540,7 +541,7 @@ func (t *darwinTray) buildNSMenu(title string, menu *Menu, counter *int) darwin.
 
 		case MenuItemSubmenu:
 			// Create a placeholder NSMenuItem for the submenu.
-			nsLabel := darwin.NewNSString(item.Label)
+			nsLabel := darwin.NewNSString(snapshot.label)
 			emptyKey := darwin.NewNSString("")
 			nsItem := darwinClasses.NSMenuItem.Send(darwinSels.alloc)
 			nsItem = darwin.MsgSend3Ptr(nsItem, darwinSels.initWithTitleActionKeyEquiv,
@@ -550,7 +551,7 @@ func (t *darwinTray) buildNSMenu(title string, menu *Menu, counter *int) darwin.
 			}
 
 			// Build the submenu recursively.
-			subMenu := t.buildNSMenu(item.Label, item.Submenu, counter)
+			subMenu := t.buildNSMenu(snapshot.label, item.Submenu, counter)
 			if !subMenu.IsNil() {
 				nsItem.SendPtr(darwinSels.setSubmenu, subMenu.Ptr())
 			}
@@ -562,7 +563,7 @@ func (t *darwinTray) buildNSMenu(title string, menu *Menu, counter *int) darwin.
 			// call SetLabel/SetDisabled on the *MenuItem returned by
 			// AddSubmenu, so it must be resolvable via nsItems.
 			t.menuMu.Lock()
-			t.nsItems[item.ID()] = nsItem
+			t.nsItems[snapshot.id] = nsItem
 			t.menuMu.Unlock()
 
 		default:
@@ -570,7 +571,7 @@ func (t *darwinTray) buildNSMenu(title string, menu *Menu, counter *int) darwin.
 			idx := *counter
 			*counter++
 
-			nsLabel := darwin.NewNSString(item.Label)
+			nsLabel := darwin.NewNSString(snapshot.label)
 			emptyKey := darwin.NewNSString("")
 			nsItem := darwinClasses.NSMenuItem.Send(darwinSels.alloc)
 
@@ -591,13 +592,13 @@ func (t *darwinTray) buildNSMenu(title string, menu *Menu, counter *int) darwin.
 
 			// Set checked state for checkbox items.
 			// NSControlStateValueOn = 1, NSControlStateValueOff = 0
-			if item.Type == MenuItemCheckbox && item.Checked {
+			if snapshot.itemType == MenuItemCheckbox && snapshot.checked {
 				nsItem.SendInt(darwinSels.setState, 1)
 			}
 
 			// Set icon if provided.
-			if len(item.Icon) > 0 {
-				nsImage := createNSImage(item.Icon, false)
+			if len(snapshot.icon) > 0 {
+				nsImage := createNSImage(snapshot.icon, false)
 				if !nsImage.IsNil() {
 					nsItem.SendPtr(darwinSels.setImage, nsImage.Ptr())
 				}
@@ -610,7 +611,7 @@ func (t *darwinTray) buildNSMenu(title string, menu *Menu, counter *int) darwin.
 			if item.OnClick != nil {
 				t.menuActions[idx] = item.OnClick
 			}
-			t.nsItems[item.ID()] = nsItem
+			t.nsItems[snapshot.id] = nsItem
 			t.menuMu.Unlock()
 
 			nsMenu.SendPtr(darwinSels.addItem, nsItem.Ptr())
@@ -621,21 +622,25 @@ func (t *darwinTray) buildNSMenu(title string, menu *Menu, counter *int) darwin.
 }
 
 // UpdateItem dispatches a menu item update to the main thread.
-// AppKit requires all UI mutations on the main thread. We enqueue the item
+// AppKit requires all UI mutations on the main thread. We enqueue the snapshot
 // and call performSelectorOnMainThread to drain the queue safely.
 func (t *darwinTray) UpdateItem(item *MenuItem) error {
+	return t.updateItem(item.snapshot())
+}
+
+func (t *darwinTray) updateItem(item menuItemSnapshot) error {
 	if t.nsMenu.IsNil() || t.target.IsNil() {
 		return nil
 	}
 
 	t.menuMu.Lock()
-	_, ok := t.nsItems[item.ID()]
+	_, ok := t.nsItems[item.id]
 	t.menuMu.Unlock()
 	if !ok {
 		return nil
 	}
 
-	// Snapshot current state into the channel for main-thread processing.
+	// Queue the captured state for main-thread processing.
 	t.pendingUpdates <- item
 
 	// Dispatch to main thread: [target performSelectorOnMainThread:@selector(drainUpdates:) withObject:nil waitUntilDone:YES]
@@ -648,12 +653,12 @@ func (t *darwinTray) UpdateItem(item *MenuItem) error {
 
 // applyPendingUpdates drains the pendingUpdates channel and applies AppKit
 // changes. MUST be called on the main thread (via drainUpdates: ObjC callback).
-// A nil item signals Destroy.
+// A snapshot with a zero ID signals Destroy.
 func (t *darwinTray) applyPendingUpdates() {
 	for {
 		select {
 		case item := <-t.pendingUpdates:
-			if item == nil {
+			if item.id == 0 {
 				t.destroyOnMainThread()
 				return
 			}
@@ -664,33 +669,33 @@ func (t *darwinTray) applyPendingUpdates() {
 	}
 }
 
-// applyItemUpdate applies a single MenuItem's current state to its NSMenuItem.
+// applyItemUpdate applies a single snapshot to its NSMenuItem.
 // MUST be called on the main thread.
-func (t *darwinTray) applyItemUpdate(item *MenuItem) {
+func (t *darwinTray) applyItemUpdate(item menuItemSnapshot) {
 	t.menuMu.Lock()
-	nsItem, ok := t.nsItems[item.ID()]
+	nsItem, ok := t.nsItems[item.id]
 	t.menuMu.Unlock()
 	if !ok || nsItem.IsNil() {
 		return
 	}
 
-	nsTitle := darwin.NewNSString(item.Label)
+	nsTitle := darwin.NewNSString(item.label)
 	if !nsTitle.IsNil() {
 		nsItem.SendPtr(darwinSels.setTitle, nsTitle.Ptr())
 	}
 
-	if item.Type == MenuItemCheckbox {
+	if item.itemType == MenuItemCheckbox {
 		state := int64(0)
-		if item.Checked {
+		if item.checked {
 			state = 1
 		}
 		nsItem.SendInt(darwinSels.setState, state)
 	}
 
-	nsItem.SendBool(darwinSels.setEnabled, !item.Disabled)
+	nsItem.SendBool(darwinSels.setEnabled, !item.disabled)
 
-	if len(item.Icon) > 0 {
-		nsImage := createNSImage(item.Icon, false)
+	if len(item.icon) > 0 {
+		nsImage := createNSImage(item.icon, false)
 		if !nsImage.IsNil() {
 			nsItem.SendPtr(darwinSels.setImage, nsImage.Ptr())
 		}
@@ -857,7 +862,7 @@ func (t *darwinTray) Destroy() {
 	}
 
 	// Queue cleanup for main thread execution.
-	t.pendingUpdates <- nil // nil sentinel signals destroy
+	t.pendingUpdates <- menuItemSnapshot{} // zero ID sentinel signals destroy
 
 	// Dispatch cleanup to main thread. waitUntilDone:NO.
 	drainSel := darwin.RegisterSelector("drainUpdates:")

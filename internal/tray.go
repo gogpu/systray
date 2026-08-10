@@ -76,7 +76,9 @@ func (t *Tray) SetTooltip(text string) error {
 // SetMenu stores the menu, wires the MenuItemUpdater (if supported), and forwards to the platform.
 func (t *Tray) SetMenu(menu *Menu) error {
 	t.Menu = menu
-	if updater, ok := t.Platform.(MenuItemUpdater); ok {
+	if updater, ok := t.Platform.(menuItemSnapshotUpdater); ok {
+		setMenuSnapshotUpdater(menu, updater)
+	} else if updater, ok := t.Platform.(MenuItemUpdater); ok {
 		SetMenuUpdater(menu, updater)
 	}
 	return t.Platform.SetMenu(menu)

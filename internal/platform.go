@@ -27,6 +27,12 @@ type MenuItemUpdater interface {
 	UpdateItem(item *MenuItem) error
 }
 
+// menuItemSnapshotUpdater is the race-free dispatch seam used by built-in
+// platforms. It is deliberately private so snapshots cannot escape internal.
+type menuItemSnapshotUpdater interface {
+	updateItem(item menuItemSnapshot) error
+}
+
 // Callbacks holds event handlers set by the public API layer.
 type Callbacks struct {
 	OnClick       func()

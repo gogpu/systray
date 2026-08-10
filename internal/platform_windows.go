@@ -744,7 +744,8 @@ func (t *win32Tray) buildHMENU(menu *Menu) (uintptr, error) {
 func (t *win32Tray) populateMenu(hmenu uintptr, menu *Menu) error {
 	pos := 0
 	for i, item := range menu.Items {
-		switch item.Type {
+		snapshot := item.snapshot()
+		switch snapshot.itemType {
 		case MenuItemSeparator:
 			ret, _, _ := procAppendMenuW.Call(
 				hmenu,
@@ -763,15 +764,15 @@ func (t *win32Tray) populateMenu(hmenu uintptr, menu *Menu) error {
 			}
 			subHMenu, err := t.buildHMENU(item.Submenu)
 			if err != nil {
-				return fmt.Errorf("build submenu %q: %w", item.Label, err)
+				return fmt.Errorf("build submenu %q: %w", snapshot.label, err)
 			}
-			label, err := windows.UTF16PtrFromString(item.Label)
+			label, err := windows.UTF16PtrFromString(snapshot.label)
 			if err != nil {
 				_, _, _ = procDestroyMenu.Call(subHMenu)
-				return fmt.Errorf("utf16 submenu label %q: %w", item.Label, err)
+				return fmt.Errorf("utf16 submenu label %q: %w", snapshot.label, err)
 			}
 			flags := uintptr(mfString | mfPopup)
-			if item.Disabled {
+			if snapshot.disabled {
 				flags |= mfGrayed
 			}
 			ret, _, _ := procAppendMenuW.Call(
@@ -782,7 +783,7 @@ func (t *win32Tray) populateMenu(hmenu uintptr, menu *Menu) error {
 			)
 			if ret == 0 {
 				_, _, _ = procDestroyMenu.Call(subHMenu)
-				return fmt.Errorf("AppendMenuW submenu %q failed", item.Label)
+				return fmt.Errorf("AppendMenuW submenu %q failed", snapshot.label)
 			}
 
 			// MF_POPUP items carry the submenu HMENU in the ID slot instead of
@@ -793,15 +794,15 @@ func (t *win32Tray) populateMenu(hmenu uintptr, menu *Menu) error {
 			pos++
 
 		default: // MenuItemNormal, MenuItemCheckbox
-			label, err := windows.UTF16PtrFromString(item.Label)
+			label, err := windows.UTF16PtrFromString(snapshot.label)
 			if err != nil {
-				return fmt.Errorf("utf16 menu label %q: %w", item.Label, err)
+				return fmt.Errorf("utf16 menu label %q: %w", snapshot.label, err)
 			}
 			flags := uintptr(mfString)
-			if item.Checked {
+			if snapshot.checked {
 				flags |= mfChecked
 			}
-			if item.Disabled {
+			if snapshot.disabled {
 				flags |= mfGrayed
 			}
 			cmdID := t.nextCmdID
@@ -813,7 +814,7 @@ func (t *win32Tray) populateMenu(hmenu uintptr, menu *Menu) error {
 				uintptr(unsafe.Pointer(label)),
 			)
 			if ret == 0 {
-				return fmt.Errorf("AppendMenuW item %q failed", item.Label)
+				return fmt.Errorf("AppendMenuW item %q failed", snapshot.label)
 			}
 			t.itemIDs[item.ID()] = cmdID
 			t.itemHMenus[item.ID()] = hmenu
@@ -829,34 +830,38 @@ func (t *win32Tray) populateMenu(hmenu uintptr, menu *Menu) error {
 // Submenu containers (MF_POPUP items) carry their submenu HMENU in the ID slot
 // instead of a command ID, so they are resolved by position (fByPosition=TRUE).
 func (t *win32Tray) UpdateItem(item *MenuItem) error {
-	hmenu, ok := t.itemHMenus[item.ID()]
+	return t.updateItem(item.snapshot())
+}
+
+func (t *win32Tray) updateItem(item menuItemSnapshot) error {
+	hmenu, ok := t.itemHMenus[item.id]
 	if !ok || hmenu == 0 {
 		return nil
 	}
 
 	var uItem uintptr
 	byPosition := false
-	if pos, isContainer := t.itemPos[item.ID()]; isContainer {
+	if pos, isContainer := t.itemPos[item.id]; isContainer {
 		uItem = uintptr(pos)
 		byPosition = true
 	} else {
-		cmdID, ok := t.itemIDs[item.ID()]
+		cmdID, ok := t.itemIDs[item.id]
 		if !ok {
 			return nil
 		}
 		uItem = uintptr(cmdID)
 	}
 
-	label, err := windows.UTF16PtrFromString(item.Label)
+	label, err := windows.UTF16PtrFromString(item.label)
 	if err != nil {
-		return fmt.Errorf("utf16 label %q: %w", item.Label, err)
+		return fmt.Errorf("utf16 label %q: %w", item.label, err)
 	}
 
 	var fState uint32
-	if item.Checked {
+	if item.checked {
 		fState |= mfsChecked
 	}
-	if item.Disabled {
+	if item.disabled {
 		fState |= mfsDisabled
 	}
 
@@ -873,7 +878,7 @@ func (t *win32Tray) UpdateItem(item *MenuItem) error {
 	}
 	ret, _, _ := procSetMenuItemInfoW.Call(hmenu, uItem, fByPosition, uintptr(unsafe.Pointer(&mii)))
 	if ret == 0 {
-		return fmt.Errorf("SetMenuItemInfoW failed for item %q", item.Label)
+		return fmt.Errorf("SetMenuItemInfoW failed for item %q", item.label)
 	}
 
 	return nil

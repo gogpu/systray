@@ -418,33 +418,37 @@ func (t *linuxTray) buildMenuItemMap(items []*MenuItem, nextID int32) int32 {
 // UpdateItem updates a single menu item's properties and emits ItemsPropertiesUpdated
 // so the desktop environment refreshes the item in-place without a full layout rebuild.
 func (t *linuxTray) UpdateItem(item *MenuItem) error {
+	return t.updateItem(item.snapshot())
+}
+
+func (t *linuxTray) updateItem(item menuItemSnapshot) error {
 	if t.conn == nil {
 		return nil
 	}
 
 	t.mu.RLock()
-	dbusID, ok := t.itemIDs[item.ID()]
+	dbusID, ok := t.itemIDs[item.id]
 	t.mu.RUnlock()
 	if !ok {
 		return nil
 	}
 
 	props := make(map[string]dbus.Variant)
-	props["label"] = dbus.MakeVariant(item.Label)
-	if item.Disabled {
+	props["label"] = dbus.MakeVariant(item.label)
+	if item.disabled {
 		props["enabled"] = dbus.MakeVariant(false)
 	} else {
 		props["enabled"] = dbus.MakeVariant(true)
 	}
-	if item.Type == MenuItemCheckbox {
-		if item.Checked {
+	if item.itemType == MenuItemCheckbox {
+		if item.checked {
 			props["toggle-state"] = dbus.MakeVariant(int32(1))
 		} else {
 			props["toggle-state"] = dbus.MakeVariant(int32(0))
 		}
 	}
-	if len(item.Icon) > 0 {
-		props["icon-data"] = dbus.MakeVariant(item.Icon)
+	if len(item.icon) > 0 {
+		props["icon-data"] = dbus.MakeVariant(item.icon)
 	}
 
 	updated := []menuItemProps{{ID: dbusID, Props: props}}
@@ -665,7 +669,7 @@ func (m *dbusMenuService) buildLayout(id int32, maxDepth int32, currentDepth int
 		return menuLayout{V0: id, V1: map[string]dbus.Variant{}, V2: nil}
 	}
 
-	props := m.itemProperties(item)
+	props := m.itemProperties(item.snapshot())
 	var children []dbus.Variant
 	if item.Type == MenuItemSubmenu && item.Submenu != nil && maxDepth != 0 {
 		// Find the starting child ID for this submenu.
@@ -687,7 +691,7 @@ func (m *dbusMenuService) buildChildren(items []*MenuItem, startID int32, maxDep
 		id := nextID
 		nextID++
 
-		props := m.itemProperties(item)
+		props := m.itemProperties(item.snapshot())
 		var subChildren []dbus.Variant
 
 		if item.Type == MenuItemSubmenu && item.Submenu != nil {
@@ -725,39 +729,39 @@ func (m *dbusMenuService) findChildStartID(parentID int32) int32 {
 }
 
 // itemProperties converts a MenuItem to dbusmenu properties.
-func (m *dbusMenuService) itemProperties(item *MenuItem) map[string]dbus.Variant {
+func (m *dbusMenuService) itemProperties(item menuItemSnapshot) map[string]dbus.Variant {
 	props := make(map[string]dbus.Variant)
 
-	switch item.Type {
+	switch item.itemType {
 	case MenuItemSeparator:
 		props["type"] = dbus.MakeVariant("separator")
 
 	case MenuItemCheckbox:
-		props["label"] = dbus.MakeVariant(item.Label)
+		props["label"] = dbus.MakeVariant(item.label)
 		props["toggle-type"] = dbus.MakeVariant("checkmark")
-		if item.Checked {
+		if item.checked {
 			props["toggle-state"] = dbus.MakeVariant(int32(1))
 		} else {
 			props["toggle-state"] = dbus.MakeVariant(int32(0))
 		}
-		if item.Disabled {
+		if item.disabled {
 			props["enabled"] = dbus.MakeVariant(false)
 		}
 
 	case MenuItemSubmenu:
-		props["label"] = dbus.MakeVariant(item.Label)
+		props["label"] = dbus.MakeVariant(item.label)
 		props["children-display"] = dbus.MakeVariant("submenu")
-		if item.Disabled {
+		if item.disabled {
 			props["enabled"] = dbus.MakeVariant(false)
 		}
 
 	default: // MenuItemNormal
-		props["label"] = dbus.MakeVariant(item.Label)
-		if item.Disabled {
+		props["label"] = dbus.MakeVariant(item.label)
+		if item.disabled {
 			props["enabled"] = dbus.MakeVariant(false)
 		}
-		if len(item.Icon) > 0 {
-			props["icon-data"] = dbus.MakeVariant(item.Icon)
+		if len(item.icon) > 0 {
+			props["icon-data"] = dbus.MakeVariant(item.icon)
 		}
 	}
 
@@ -786,7 +790,7 @@ func (m *dbusMenuService) GetGroupProperties(ids []int32, propertyNames []string
 		}
 		result = append(result, menuItemProps{
 			ID:    id,
-			Props: m.itemProperties(item),
+			Props: m.itemProperties(item.snapshot()),
 		})
 	}
 
