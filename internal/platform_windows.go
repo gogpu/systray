@@ -608,7 +608,7 @@ func (t *win32Tray) Bounds() (int, int, int, int) {
 }
 
 // Run blocks the calling goroutine, pumping the Win32 message loop.
-// Returns when PostQuitMessage is called (via Quit or WM_DESTROY).
+// Returns when PostQuitMessage is called after the last tray is destroyed.
 // All enterprise references (Qt6, getlantern/systray, fyne-io/systray)
 // use GetMessage — 0% CPU when idle, correct WM_QUIT semantics.
 func (t *win32Tray) Run() error {
@@ -642,7 +642,7 @@ func (t *win32Tray) Destroy() {
 
 	// Post WM_CLOSE to the window. This is thread-safe (PostMessage works from
 	// any thread). DefWindowProc handles WM_CLOSE by calling DestroyWindow on
-	// the correct thread, which triggers WM_DESTROY → PostQuitMessage → Run() exits.
+	// the correct thread. The final tray's WM_DESTROY posts WM_QUIT so Run exits.
 	if t.hwnd != 0 {
 		ret, _, _ := procPostMessageW.Call(t.hwnd, 0x0010, 0, 0) // WM_CLOSE = 0x0010
 		if ret == 0 {
@@ -921,6 +921,7 @@ func trayWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 	case wmDestroy:
 		trayMu.Lock()
 		delete(trayRegistry, hwnd)
+		lastTray := shouldStopWin32MessageLoop(len(trayRegistry))
 		trayMu.Unlock()
 		if t.hicon != 0 {
 			procDestroyIcon.Call(t.hicon)
@@ -931,13 +932,19 @@ func trayWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 			t.hmenu = 0
 		}
 		t.hwnd = 0
-		procPostQuitMessage.Call(0)
+		if lastTray {
+			procPostQuitMessage.Call(0)
+		}
 		return 0
 
 	default:
 		ret, _, _ := procDefWindowProcW.Call(hwnd, uintptr(msg), wParam, lParam)
 		return ret
 	}
+}
+
+func shouldStopWin32MessageLoop(remainingTrays int) bool {
+	return remainingTrays == 0
 }
 
 // handleTrayMessage processes the tray callback message.

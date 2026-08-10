@@ -188,7 +188,6 @@ type darwinTray struct {
 	btn        darwin.ID // NSStatusBarButton (from [statusItem button])
 	nsMenu     darwin.ID // NSMenu attached to the status item
 	target     darwin.ID // GoSystrayTarget instance for click action routing
-	nsApp      darwin.ID // NSApplication shared instance
 
 	callbacks *Callbacks
 	iconData  []byte // stored PNG for recovery after Hide/Show
@@ -214,6 +213,7 @@ var (
 var (
 	trayRegistryMu  sync.RWMutex
 	trayRegistryMap = make(map[uintptr]*darwinTray)
+	runningNSApp    darwin.ID
 )
 
 // NewPlatformTray creates a macOS system tray implementation.
@@ -776,29 +776,38 @@ func (t *darwinTray) Bounds() (int, int, int, int) {
 }
 
 // Run blocks the calling goroutine, running the Cocoa event loop ([NSApp run]).
-// It returns when the loop is stopped — i.e. when any tray's Destroy() has
-// run. Only call Run() once per process: the shared NSApplication event loop
-// serves all tray icons.
+// It returns when the loop is stopped after the last tray's Destroy() has run.
+// Only call Run() once per process: the shared NSApplication event loop serves
+// all tray icons.
 func (t *darwinTray) Run() error {
 	initDarwinSels()
 	initDarwinClasses()
 
 	// Get or create the shared NSApplication.
-	t.nsApp = darwinClasses.NSApplication.Send(darwinSels.sharedApplication)
-	if t.nsApp.IsNil() {
+	nsApp := darwinClasses.NSApplication.Send(darwinSels.sharedApplication)
+	if nsApp.IsNil() {
 		return errors.New("darwin: failed to get NSApplication")
 	}
+	trayRegistryMu.Lock()
+	runningNSApp = nsApp
+	trayRegistryMu.Unlock()
 
 	// Set activation policy to accessory (no dock icon for tray-only apps).
-	t.nsApp.SendInt(darwinSels.setActivationPolicy, nsApplicationActivationPolicyAccessory)
+	nsApp.SendInt(darwinSels.setActivationPolicy, nsApplicationActivationPolicyAccessory)
 
 	// Finish launching is required before the event loop can process events.
-	t.nsApp.Send(darwinSels.finishLaunching)
+	nsApp.Send(darwinSels.finishLaunching)
 
 	// Run the Cocoa event loop. This blocks until [NSApp stop:] is sent and
 	// the wake event posted by Destroy() is processed.
 	// [NSApp run]
-	t.nsApp.Send(darwinSels.run)
+	nsApp.Send(darwinSels.run)
+
+	trayRegistryMu.Lock()
+	if runningNSApp == nsApp {
+		runningNSApp = 0
+	}
+	trayRegistryMu.Unlock()
 
 	return nil
 }
@@ -808,7 +817,7 @@ func (t *darwinTray) Run() error {
 // cleanup and the event-loop stop are executed on the main thread
 // (drainUpdates:), so the ordering is deterministic:
 //
-//	cleanup → [NSApp stop:] → wake event → [NSApp run] returns → Run() returns
+//	final cleanup → [NSApp stop:] → wake event → [NSApp run] returns → Run() returns
 //
 // The drain is dispatched with waitUntilDone:NO because Destroy must never
 // block: if the shared event loop has already exited (e.g. another tray was
@@ -838,10 +847,15 @@ func (t *darwinTray) destroyOnMainThread() {
 		t.statusBar.SendPtr(darwinSels.removeStatusItem, t.statusItem.Ptr())
 	}
 
-	// Unregister from tray registry before releasing the target.
+	// Unregister from tray registry before releasing the target. Only the final
+	// tray owns shutdown of the shared application event loop.
+	lastTray := false
+	var nsApp darwin.ID
 	if !t.target.IsNil() {
 		trayRegistryMu.Lock()
 		delete(trayRegistryMap, t.target.Ptr())
+		lastTray = shouldStopDarwinApplication(len(trayRegistryMap))
+		nsApp = runningNSApp
 		trayRegistryMu.Unlock()
 	}
 
@@ -860,8 +874,12 @@ func (t *darwinTray) destroyOnMainThread() {
 	// bare CFRunLoopStop wake is insufficient (verified on macOS 14-26).
 	// stop: is thread-safe, and postEvent:atStart:YES delivers the wake event
 	// at the head of the queue (gogpu reference pattern).
-	if !t.nsApp.IsNil() {
-		t.nsApp.SendPtr(darwinSels.stop, 0)
-		darwin.PostAppDefinedEvent(t.nsApp)
+	if lastTray && !nsApp.IsNil() {
+		nsApp.SendPtr(darwinSels.stop, 0)
+		darwin.PostAppDefinedEvent(nsApp)
 	}
+}
+
+func shouldStopDarwinApplication(remainingTrays int) bool {
+	return remainingTrays == 0
 }

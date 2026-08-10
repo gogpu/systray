@@ -44,6 +44,26 @@ func newTestWin32Tray() *win32Tray {
 	return NewPlatformTray(nil).(*win32Tray)
 }
 
+func TestShouldStopWin32MessageLoop(t *testing.T) {
+	tests := []struct {
+		name                string
+		remainingTrays      int
+		wantMessageLoopStop bool
+	}{
+		{name: "last tray removed", remainingTrays: 0, wantMessageLoopStop: true},
+		{name: "one tray remains", remainingTrays: 1, wantMessageLoopStop: false},
+		{name: "multiple trays remain", remainingTrays: 2, wantMessageLoopStop: false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := shouldStopWin32MessageLoop(test.remainingTrays); got != test.wantMessageLoopStop {
+				t.Errorf("shouldStopWin32MessageLoop(%d) = %v, want %v", test.remainingTrays, got, test.wantMessageLoopStop)
+			}
+		})
+	}
+}
+
 func TestUpdateItem_SubmenuContainer_Label(t *testing.T) {
 	tray := newTestWin32Tray()
 
