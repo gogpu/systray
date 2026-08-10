@@ -32,6 +32,26 @@ type mockPlatformTray struct {
 	runErr        error
 }
 
+type mockSnapshotPlatformTray struct {
+	mockPlatformTray
+	updates []menuItemSnapshot
+}
+
+func (m *mockSnapshotPlatformTray) updateItem(item menuItemSnapshot) error {
+	m.updates = append(m.updates, item)
+	return nil
+}
+
+type mockLegacyUpdaterPlatformTray struct {
+	mockPlatformTray
+	updates []*MenuItem
+}
+
+func (m *mockLegacyUpdaterPlatformTray) UpdateItem(item *MenuItem) error {
+	m.updates = append(m.updates, item)
+	return nil
+}
+
 func (m *mockPlatformTray) Create() error {
 	if m.createErr != nil {
 		return m.createErr
@@ -292,6 +312,65 @@ func TestTray_SetMenu(t *testing.T) {
 	}
 	if mock.menu != menu {
 		t.Error("platform.menu should reference the provided menu")
+	}
+}
+
+func TestTray_SetMenuWiresSnapshotUpdaterRecursively(t *testing.T) {
+	t.Parallel()
+
+	platform := &mockSnapshotPlatformTray{}
+	tray := NewTray(platform)
+	submenu := NewMenu()
+	item := submenu.AddCheckbox("Nested", false, nil)
+	menu := NewMenu()
+	menu.AddSubmenu("More", submenu)
+
+	if err := tray.SetMenu(menu); err != nil {
+		t.Fatalf("SetMenu returned error: %v", err)
+	}
+	item.SetChecked(true)
+	item.SetDisabled(true)
+
+	if len(platform.updates) != 2 {
+		t.Fatalf("snapshot updates = %d, want 2", len(platform.updates))
+	}
+	if !platform.updates[0].checked || platform.updates[0].disabled {
+		t.Fatalf("checked update = %+v, want checked-only snapshot", platform.updates[0])
+	}
+	if !platform.updates[1].checked || !platform.updates[1].disabled {
+		t.Fatalf("disabled update = %+v, want checked and disabled snapshot", platform.updates[1])
+	}
+}
+
+func TestTray_SetMenuNilWithSnapshotUpdater(t *testing.T) {
+	t.Parallel()
+
+	platform := &mockSnapshotPlatformTray{}
+	tray := NewTray(platform)
+
+	if err := tray.SetMenu(nil); err != nil {
+		t.Fatalf("SetMenu(nil) returned error: %v", err)
+	}
+	if platform.menu != nil {
+		t.Fatalf("platform menu = %v, want nil", platform.menu)
+	}
+}
+
+func TestTray_SetMenuPreservesLegacyUpdaterIdentity(t *testing.T) {
+	t.Parallel()
+
+	platform := &mockLegacyUpdaterPlatformTray{}
+	tray := NewTray(platform)
+	menu := NewMenu()
+	item := menu.Add("Item", nil)
+
+	if err := tray.SetMenu(menu); err != nil {
+		t.Fatalf("SetMenu returned error: %v", err)
+	}
+	item.SetLabel("Updated")
+
+	if len(platform.updates) != 1 || platform.updates[0] != item {
+		t.Fatalf("legacy updates = %v, want canonical item %p", platform.updates, item)
 	}
 }
 

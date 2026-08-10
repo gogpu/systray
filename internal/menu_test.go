@@ -417,6 +417,21 @@ func TestSetMenuUpdater_NilMenu(t *testing.T) {
 	SetMenuUpdater(nil, &mockUpdater{})
 }
 
+func TestMenuItemSetUpdaterNilDetachesLegacyUpdater(t *testing.T) {
+	t.Parallel()
+
+	item := NewMenu().Add("item", nil)
+	calls := 0
+	item.SetUpdater(&mockUpdater{onUpdate: func(*MenuItem) { calls++ }})
+	item.SetUpdater(nil)
+
+	item.SetLabel("detached")
+
+	if calls != 0 {
+		t.Fatalf("detached updater calls = %d, want 0", calls)
+	}
+}
+
 func TestMenuItemUpdateUsesMutationSnapshot(t *testing.T) {
 	t.Parallel()
 
