@@ -34,12 +34,13 @@ type mockPlatformTray struct {
 
 type mockSnapshotPlatformTray struct {
 	mockPlatformTray
-	updates []menuItemSnapshot
+	updates   []menuItemSnapshot
+	updateErr error
 }
 
 func (m *mockSnapshotPlatformTray) updateItem(item menuItemSnapshot) error {
 	m.updates = append(m.updates, item)
-	return nil
+	return m.updateErr
 }
 
 type mockLegacyUpdaterPlatformTray struct {
