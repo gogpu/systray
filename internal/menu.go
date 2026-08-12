@@ -34,18 +34,12 @@ type MenuItem struct {
 	id      uint32                  // unique ID, assigned at creation
 	mu      sync.Mutex              // protects mutable fields
 	updater menuItemSnapshotUpdater // platform dispatch for live updates (nil until SetMenu)
-
-	revision       uint64
-	dispatching    bool
-	pendingUpdate  menuItemSnapshot
-	pendingUpdater menuItemSnapshotUpdater
 }
 
 // menuItemSnapshot is an immutable copy of the fields that may be changed by
 // the dynamic MenuItem setters. Platform code uses snapshots so it never reads
 // those fields concurrently with a setter. Icon owns its backing bytes.
 type menuItemSnapshot struct {
-	revision uint64
 	id       uint32
 	label    string
 	icon     []byte
@@ -59,7 +53,6 @@ func (item *MenuItem) ID() uint32 { return item.id }
 
 func (item *MenuItem) snapshotLocked() menuItemSnapshot {
 	return menuItemSnapshot{
-		revision: item.revision,
 		id:       item.id,
 		label:    item.Label,
 		icon:     append([]byte(nil), item.Icon...),
@@ -69,46 +62,11 @@ func (item *MenuItem) snapshotLocked() menuItemSnapshot {
 	}
 }
 
-// prepareUpdateLocked captures the mutation and either starts the item's sole
-// dispatcher or replaces its pending work with this newer revision.
-func (item *MenuItem) prepareUpdateLocked() (menuItemSnapshotUpdater, menuItemSnapshot) {
-	item.revision++
+func (item *MenuItem) updateLocked() (menuItemSnapshotUpdater, menuItemSnapshot) {
 	if item.updater == nil {
 		return nil, menuItemSnapshot{}
 	}
-
-	snapshot := item.snapshotLocked()
-	if item.dispatching {
-		item.pendingUpdate = snapshot
-		item.pendingUpdater = item.updater
-		return nil, menuItemSnapshot{}
-	}
-
-	item.dispatching = true
-	return item.updater, snapshot
-}
-
-// dispatchUpdates serializes platform calls without holding item.mu. A setter
-// invoked concurrently or reentrantly queues a newer snapshot for this loop.
-// Non-overlapping setter calls remain synchronous; only overlapping work may
-// be coalesced and return before its snapshot reaches the platform.
-func (item *MenuItem) dispatchUpdates(updater menuItemSnapshotUpdater, snapshot menuItemSnapshot) {
-	for {
-		_ = updater.updateItem(snapshot)
-
-		item.mu.Lock()
-		if item.pendingUpdate.revision > snapshot.revision {
-			snapshot = item.pendingUpdate
-			updater = item.pendingUpdater
-			item.pendingUpdate = menuItemSnapshot{}
-			item.pendingUpdater = nil
-			item.mu.Unlock()
-			continue
-		}
-		item.dispatching = false
-		item.mu.Unlock()
-		return
-	}
+	return item.updater, item.snapshotLocked()
 }
 
 func (item *MenuItem) snapshot() menuItemSnapshot {
@@ -138,10 +96,10 @@ func (item *MenuItem) IsDisabled() bool {
 func (item *MenuItem) SetLabel(label string) {
 	item.mu.Lock()
 	item.Label = label
-	u, snapshot := item.prepareUpdateLocked()
+	u, snapshot := item.updateLocked()
 	item.mu.Unlock()
 	if u != nil {
-		item.dispatchUpdates(u, snapshot)
+		_ = u.updateItem(snapshot)
 	}
 }
 
@@ -149,10 +107,10 @@ func (item *MenuItem) SetLabel(label string) {
 func (item *MenuItem) SetChecked(checked bool) {
 	item.mu.Lock()
 	item.Checked = checked
-	u, snapshot := item.prepareUpdateLocked()
+	u, snapshot := item.updateLocked()
 	item.mu.Unlock()
 	if u != nil {
-		item.dispatchUpdates(u, snapshot)
+		_ = u.updateItem(snapshot)
 	}
 }
 
@@ -160,10 +118,10 @@ func (item *MenuItem) SetChecked(checked bool) {
 func (item *MenuItem) SetDisabled(disabled bool) {
 	item.mu.Lock()
 	item.Disabled = disabled
-	u, snapshot := item.prepareUpdateLocked()
+	u, snapshot := item.updateLocked()
 	item.mu.Unlock()
 	if u != nil {
-		item.dispatchUpdates(u, snapshot)
+		_ = u.updateItem(snapshot)
 	}
 }
 
@@ -171,10 +129,10 @@ func (item *MenuItem) SetDisabled(disabled bool) {
 func (item *MenuItem) SetIcon(png []byte) {
 	item.mu.Lock()
 	item.Icon = append([]byte(nil), png...)
-	u, snapshot := item.prepareUpdateLocked()
+	u, snapshot := item.updateLocked()
 	item.mu.Unlock()
 	if u != nil {
-		item.dispatchUpdates(u, snapshot)
+		_ = u.updateItem(snapshot)
 	}
 }
 
@@ -182,14 +140,6 @@ func (item *MenuItem) SetIcon(png []byte) {
 func (item *MenuItem) setUpdater(u menuItemSnapshotUpdater) {
 	item.mu.Lock()
 	item.updater = u
-	if item.dispatching && item.pendingUpdate.revision != 0 {
-		if u == nil {
-			item.pendingUpdate = menuItemSnapshot{}
-			item.pendingUpdater = nil
-		} else {
-			item.pendingUpdater = u
-		}
-	}
 	item.mu.Unlock()
 }
 

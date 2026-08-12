@@ -2,7 +2,6 @@ package internal
 
 import (
 	"bytes"
-	"sync"
 	"sync/atomic"
 	"testing"
 )
@@ -472,34 +471,6 @@ func TestMenuItemUpdateUsesMutationSnapshot(t *testing.T) {
 	}
 }
 
-func TestMenuItemDispatchLeavesNewestMutationApplied(t *testing.T) {
-	t.Parallel()
-
-	item := NewMenu().Add("original", nil)
-	updater := &reversedCompletionUpdater{
-		firstEntered: make(chan struct{}),
-		releaseFirst: make(chan struct{}),
-	}
-	setMenuSnapshotUpdater(&Menu{Items: []*MenuItem{item}}, updater)
-
-	firstDone := make(chan struct{})
-	go func() {
-		item.SetLabel("first")
-		close(firstDone)
-	}()
-	<-updater.firstEntered
-
-	// Without per-item serialization this update completes first, then the
-	// blocked older update overwrites it after release.
-	item.SetLabel("newest")
-	close(updater.releaseFirst)
-	<-firstDone
-
-	if got := updater.appliedLabel(); got != "newest" {
-		t.Fatalf("final applied label = %q, want newest mutation", got)
-	}
-}
-
 func TestMenuItemDispatchAllowsReentrantSetter(t *testing.T) {
 	t.Parallel()
 
@@ -549,65 +520,6 @@ func TestLegacyUpdaterPreservesIdentityAndReentrancy(t *testing.T) {
 	}
 }
 
-func TestMenuItemPendingUpdateRetargetsReplacementUpdater(t *testing.T) {
-	t.Parallel()
-
-	item := NewMenu().Add("item", nil)
-	first := &blockingSnapshotUpdater{
-		entered:  make(chan struct{}),
-		release:  make(chan struct{}),
-		observed: make(chan menuItemSnapshot, 1),
-	}
-	second := &recordingSnapshotUpdater{}
-	item.setUpdater(first)
-
-	done := make(chan struct{})
-	go func() {
-		item.SetLabel("first")
-		close(done)
-	}()
-	<-first.entered
-	item.SetLabel("pending")
-	item.setUpdater(second)
-	close(first.release)
-	<-done
-
-	if got := first.calls.Load(); got != 1 {
-		t.Fatalf("old updater calls = %d, want only already-running call", got)
-	}
-	updates := second.snapshots()
-	if len(updates) != 1 || updates[0].label != "pending" {
-		t.Fatalf("replacement updates = %+v, want pending snapshot", updates)
-	}
-}
-
-func TestMenuItemPendingUpdateClearedOnDetach(t *testing.T) {
-	t.Parallel()
-
-	item := NewMenu().Add("item", nil)
-	updater := &blockingSnapshotUpdater{
-		entered:  make(chan struct{}),
-		release:  make(chan struct{}),
-		observed: make(chan menuItemSnapshot, 1),
-	}
-	item.setUpdater(updater)
-
-	done := make(chan struct{})
-	go func() {
-		item.SetLabel("first")
-		close(done)
-	}()
-	<-updater.entered
-	item.SetLabel("pending")
-	item.setUpdater(nil)
-	close(updater.release)
-	<-done
-
-	if got := updater.calls.Load(); got != 1 {
-		t.Fatalf("detached updater calls = %d, want only already-running call", got)
-	}
-}
-
 func TestMenuItemIconSnapshotsOwnBytes(t *testing.T) {
 	t.Parallel()
 
@@ -651,49 +563,6 @@ type blockingSnapshotUpdater struct {
 	entered  chan struct{}
 	release  chan struct{}
 	observed chan menuItemSnapshot
-}
-
-type reversedCompletionUpdater struct {
-	calls        atomic.Uint32
-	firstEntered chan struct{}
-	releaseFirst chan struct{}
-	mu           sync.Mutex
-	applied      string
-}
-
-type recordingSnapshotUpdater struct {
-	mu      sync.Mutex
-	updates []menuItemSnapshot
-}
-
-func (u *recordingSnapshotUpdater) updateItem(item menuItemSnapshot) error {
-	u.mu.Lock()
-	u.updates = append(u.updates, item)
-	u.mu.Unlock()
-	return nil
-}
-
-func (u *recordingSnapshotUpdater) snapshots() []menuItemSnapshot {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	return append([]menuItemSnapshot(nil), u.updates...)
-}
-
-func (u *reversedCompletionUpdater) updateItem(item menuItemSnapshot) error {
-	if u.calls.Add(1) == 1 {
-		close(u.firstEntered)
-		<-u.releaseFirst
-	}
-	u.mu.Lock()
-	u.applied = item.label
-	u.mu.Unlock()
-	return nil
-}
-
-func (u *reversedCompletionUpdater) appliedLabel() string {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	return u.applied
 }
 
 type snapshotUpdaterFunc func(menuItemSnapshot) error
