@@ -284,6 +284,16 @@ systray is part of the [GoGPU](https://github.com/gogpu) ecosystem — 1.2M+ lin
 | [ui](https://github.com/gogpu/ui) | GUI toolkit (27 widgets, 4 themes) |
 | **[systray](https://github.com/gogpu/systray)** | **System tray (this library)** |
 
+## Star History
+
+<a href="https://starhistory.io">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.starhistory.io/png?repos=gogpu/systray&style=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.starhistory.io/png?repos=gogpu/systray&style=professional" />
+   <img alt="Star History Chart" src="https://api.starhistory.io/png?repos=gogpu/systray" width="800" />
+ </picture>
+</a>
+
 ## License
 
 MIT License — see [LICENSE](LICENSE) for details.
