@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-08-30
+
+### Added
+
+- **`SetAppName()`** — configurable application name for Linux D-Bus notifications. Previously hardcoded as `"gogpu-systray"`. On Windows/macOS, the OS determines app identity automatically. Default: empty string (per D-Bus spec). ([#35](https://github.com/gogpu/systray/issues/35))
+- **`SetMenu(nil)`** — pass nil to remove the current context menu. Previously panicked with nil pointer dereference. By @besmpl. ([#29](https://github.com/gogpu/systray/pull/29))
+
+### Fixed
+
+- **Multi-tray lifecycle:** destroying one tray no longer kills the event loop for all trays. `Run()` only exits when the last tray is removed. By @besmpl. ([#30](https://github.com/gogpu/systray/pull/30))
+- **macOS: crash on tray creation before finishLaunching.** `NSStatusItem` created before `NSApplication finishLaunching` caused `CGSConnectionByID` assertion crash. Now `ensureNSApplicationLaunched()` is called in `Create()`. By @nange. ([#32](https://github.com/gogpu/systray/issues/32), [#33](https://github.com/gogpu/systray/pull/33))
+- **Concurrent menu update race.** Platform backends read `MenuItem` fields (`Label`, `Checked`, `Disabled`) without holding `item.mu`. Now captures immutable snapshot under lock before dispatching to platform. By @besmpl. ([#31](https://github.com/gogpu/systray/pull/31))
+
 ## [0.2.8] - 2026-08-06
 
 ### Fixed
@@ -118,7 +131,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Run() message loop for standalone usage
 - 72 tests, 84% public API coverage
 
-[Unreleased]: https://github.com/gogpu/systray/compare/v0.2.8...HEAD
+[Unreleased]: https://github.com/gogpu/systray/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/gogpu/systray/compare/v0.2.8...v0.3.0
 [0.2.8]: https://github.com/gogpu/systray/compare/v0.2.7...v0.2.8
 [0.2.7]: https://github.com/gogpu/systray/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/gogpu/systray/compare/v0.2.5...v0.2.6

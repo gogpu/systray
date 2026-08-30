@@ -18,6 +18,7 @@ All three platforms implemented and production-ready:
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
+| **v0.3.0** | 2026-08-30 | SetAppName (#35), SetMenu(nil) (#29), multi-tray lifecycle (#30), macOS CGS crash (#33), race fix (#31) |
 | **v0.2.8** | 2026-08-06 | Windows submenu container UpdateItem: position-based lookup (PR #27 by @nange) |
 | **v0.2.7** | 2026-08-06 | macOS submenu UpdateItem: nsItems map replaces itemWithTag (PR #24 by @nange) |
 | **v0.2.6** | 2026-08-05 | macOS Run() exit: PostAppDefinedEvent (PR #21 by @nange) |
