@@ -54,6 +54,13 @@ func (t *SystemTray) SetTemplateIcon(png []byte) *SystemTray {
 	return t
 }
 
+// SetAppName sets the application name used in notifications on Linux.
+// On Windows and macOS, the OS determines the application identity automatically.
+func (t *SystemTray) SetAppName(name string) *SystemTray {
+	t.impl.SetAppName(name)
+	return t
+}
+
 // SetTooltip sets the hover tooltip text.
 func (t *SystemTray) SetTooltip(text string) *SystemTray {
 	_ = t.impl.SetTooltip(text)

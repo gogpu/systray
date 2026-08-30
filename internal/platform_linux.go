@@ -73,6 +73,7 @@ type linuxTray struct {
 
 	iconPixmap []dbusPixmap // cached ARGB pixmap
 	tooltip    string
+	appName    string // app_name for D-Bus Notify (default: empty)
 	status     string // "Active" or "Passive"
 
 	mu   sync.RWMutex
@@ -457,6 +458,11 @@ func (t *linuxTray) updateItem(item menuItemSnapshot) error {
 	return t.conn.Emit(menuPath, menuInterface+".ItemsPropertiesUpdated", updated, removed)
 }
 
+// SetAppName sets the application name used in D-Bus Notify calls.
+func (t *linuxTray) SetAppName(name string) {
+	t.appName = name
+}
+
 // ShowNotification displays a desktop notification via org.freedesktop.Notifications.
 func (t *linuxTray) ShowNotification(title, message string) error {
 	if t.conn == nil {
@@ -465,7 +471,7 @@ func (t *linuxTray) ShowNotification(title, message string) error {
 
 	obj := t.conn.Object(notifInterface, notifPath)
 	call := obj.Call(notifInterface+".Notify", 0,
-		"gogpu-systray",           // app_name
+		t.appName,                 // app_name
 		uint32(0),                 // replaces_id
 		"",                        // app_icon (empty — no icon)
 		title,                     // summary

@@ -21,6 +21,7 @@ type Tray struct {
 	DarkModeIcon []byte
 	TemplateIcon []byte
 	Tooltip      string
+	AppName      string
 	Menu         *Menu
 	Visible      bool
 }
@@ -64,6 +65,16 @@ func (t *Tray) SetTemplateIcon(png []byte) {
 			// Non-fatal: icon may not render but tray remains functional.
 			_ = err
 		}
+	}
+}
+
+// SetAppName stores the application name used for notifications on Linux
+// (D-Bus org.freedesktop.Notifications app_name parameter). On Windows and
+// macOS, the OS determines the application identity automatically.
+func (t *Tray) SetAppName(name string) {
+	t.AppName = name
+	if setter, ok := t.Platform.(interface{ SetAppName(string) }); ok {
+		setter.SetAppName(name)
 	}
 }
 
