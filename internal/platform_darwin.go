@@ -20,10 +20,6 @@ const nsVariableStatusItemLength = -1.0
 // Systray apps typically run as accessories, not as regular dock-visible apps.
 const nsApplicationActivationPolicyAccessory = 1
 
-// menuItemCallbackID is the base for menu item command IDs.
-// Each menu item gets baseID + index to route action callbacks.
-const menuItemCallbackBaseID = 1000
-
 // Selectors used by the darwin tray implementation.
 // Registered lazily on first use.
 var darwinSels struct {
@@ -192,9 +188,11 @@ type darwinTray struct {
 	callbacks *Callbacks
 	iconData  []byte // stored PNG for recovery after Hide/Show
 
-	// menuActions maps menu item indices to their callbacks.
-	// Populated when SetMenu builds the NSMenu hierarchy.
-	menuActions    map[int]func()
+	// menuActions maps stable MenuItem IDs to their callbacks. Populated when
+	// SetMenu builds the NSMenu hierarchy; keyed by the item's stable ID so a
+	// click on a menu that has since been rebuilt resolves to the same item or
+	// to nothing — never to a different item.
+	menuActions    map[uint32]func()
 	nsItems        map[uint32]darwin.ID // item.ID() -> NSMenuItem handle (incl. submenus)
 	menuMu         sync.Mutex
 	pendingUpdates chan menuItemSnapshot // buffered channel for main-thread dispatch
@@ -220,7 +218,7 @@ var (
 func NewPlatformTray(callbacks *Callbacks) PlatformTray {
 	return &darwinTray{
 		callbacks:      callbacks,
-		menuActions:    make(map[int]func()),
+		menuActions:    make(map[uint32]func()),
 		nsItems:        make(map[uint32]darwin.ID),
 		pendingUpdates: make(chan menuItemSnapshot, 64),
 	}
@@ -336,7 +334,9 @@ func registerGoSystrayTarget() (darwin.Class, error) {
 		darwin.ClassAddMethod(cls, darwin.RegisterSelector("trayClicked:"), trayClickedIMP, "v@:@")
 
 		// Add menuItemClicked: method — called when a menu item is clicked.
-		// We use the sender's tag to look up the Go callback.
+		// The sender's tag is the item's stable MenuItem.ID(); it is looked up
+		// in the current menuActions map, so a stale tag resolves to the same
+		// item or to nothing, never to a different item.
 		// ObjC signature: -(void)menuItemClicked:(NSMenuItem*)sender → "v@:@"
 		menuClickedIMP := ffi.NewCallback(func(self, sel, sender uintptr) uintptr {
 			trayRegistryMu.RLock()
@@ -347,10 +347,9 @@ func registerGoSystrayTarget() (darwin.Class, error) {
 			}
 			tagSel := darwin.RegisterSelector("tag")
 			tag := darwin.ID(sender).Send(tagSel)
-			idx := int(tag)
 
 			t.menuMu.Lock()
-			fn := t.menuActions[idx]
+			fn := t.menuActions[uint32(tag)]
 			t.menuMu.Unlock()
 
 			if fn != nil {
@@ -488,12 +487,11 @@ func (t *darwinTray) SetMenu(menu *Menu) error {
 	// Build the NSMenu hierarchy.
 	t.menuMu.Lock()
 	// Clear old actions and item handle mappings.
-	t.menuActions = make(map[int]func())
+	t.menuActions = make(map[uint32]func())
 	t.nsItems = make(map[uint32]darwin.ID)
 	t.menuMu.Unlock()
 
-	counter := menuItemCallbackBaseID
-	nsMenu := t.buildNSMenu("", menu, &counter)
+	nsMenu := t.buildNSMenu("", menu)
 	if nsMenu.IsNil() {
 		return errors.New("darwin: failed to build NSMenu")
 	}
@@ -507,8 +505,9 @@ func (t *darwinTray) SetMenu(menu *Menu) error {
 }
 
 // buildNSMenu recursively converts a Menu into an NSMenu.
-// counter is incremented per item and used as the tag for callback routing.
-func (t *darwinTray) buildNSMenu(title string, menu *Menu, counter *int) darwin.ID {
+// Each actionable item is tagged with its stable MenuItem.ID() for callback
+// routing, so tags are never reused for a different item across rebuilds.
+func (t *darwinTray) buildNSMenu(title string, menu *Menu) darwin.ID {
 	initDarwinSels()
 	initDarwinClasses()
 
@@ -551,7 +550,7 @@ func (t *darwinTray) buildNSMenu(title string, menu *Menu, counter *int) darwin.
 			}
 
 			// Build the submenu recursively.
-			subMenu := t.buildNSMenu(snapshot.label, item.Submenu, counter)
+			subMenu := t.buildNSMenu(snapshot.label, item.Submenu)
 			if !subMenu.IsNil() {
 				nsItem.SendPtr(darwinSels.setSubmenu, subMenu.Ptr())
 			}
@@ -568,9 +567,6 @@ func (t *darwinTray) buildNSMenu(title string, menu *Menu, counter *int) darwin.
 
 		default:
 			// Normal or checkbox item.
-			idx := *counter
-			*counter++
-
 			nsLabel := darwin.NewNSString(snapshot.label)
 			emptyKey := darwin.NewNSString("")
 			nsItem := darwinClasses.NSMenuItem.Send(darwinSels.alloc)
@@ -585,10 +581,10 @@ func (t *darwinTray) buildNSMenu(title string, menu *Menu, counter *int) darwin.
 			// Set the target so Cocoa sends the action to our GoSystrayTarget.
 			nsItem.SendPtr(darwinSels.setTarget, t.target.Ptr())
 
-			// Set tag for callback routing.
-			// [nsItem setTag:idx]
+			// Set tag for callback routing to the item's stable ID.
+			// [nsItem setTag:snapshot.id]
 			setTagSel := darwin.RegisterSelector("setTag:")
-			nsItem.SendInt(setTagSel, int64(idx))
+			nsItem.SendInt(setTagSel, int64(snapshot.id))
 
 			// Set checked state for checkbox items.
 			// NSControlStateValueOn = 1, NSControlStateValueOff = 0
@@ -609,7 +605,7 @@ func (t *darwinTray) buildNSMenu(title string, menu *Menu, counter *int) darwin.
 			// items inside submenus must be resolved via this map.
 			t.menuMu.Lock()
 			if item.OnClick != nil {
-				t.menuActions[idx] = item.OnClick
+				t.menuActions[snapshot.id] = item.OnClick
 			}
 			t.nsItems[snapshot.id] = nsItem
 			t.menuMu.Unlock()
