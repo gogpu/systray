@@ -40,8 +40,14 @@ var darwinSels struct {
 	run                   darwin.SEL
 	stop                  darwin.SEL
 	finishLaunching       darwin.SEL
+	currentEvent          darwin.SEL // currentEvent
 	nextEventMatchingMask darwin.SEL // nextEventMatchingMask:untilDate:inMode:dequeue:
 	sendEvent             darwin.SEL
+
+	// NSEvent
+	clickCount    darwin.SEL // clickCount
+	buttonNumber  darwin.SEL // buttonNumber
+	modifierFlags darwin.SEL // modifierFlags
 
 	// NSStatusBar
 	systemStatusBar   darwin.SEL
@@ -116,9 +122,15 @@ func initDarwinSels() {
 		darwinSels.run = darwin.RegisterSelector("run")
 		darwinSels.stop = darwin.RegisterSelector("stop:")
 		darwinSels.finishLaunching = darwin.RegisterSelector("finishLaunching")
+		darwinSels.currentEvent = darwin.RegisterSelector("currentEvent")
 		darwinSels.nextEventMatchingMask = darwin.RegisterSelector(
 			"nextEventMatchingMask:untilDate:inMode:dequeue:")
 		darwinSels.sendEvent = darwin.RegisterSelector("sendEvent:")
+
+		// NSEvent
+		darwinSels.clickCount = darwin.RegisterSelector("clickCount")
+		darwinSels.buttonNumber = darwin.RegisterSelector("buttonNumber")
+		darwinSels.modifierFlags = darwin.RegisterSelector("modifierFlags")
 
 		// NSStatusBar
 		darwinSels.systemStatusBar = darwin.RegisterSelector("systemStatusBar")
@@ -326,11 +338,22 @@ func registerGoSystrayTarget() (darwin.Class, error) {
 			trayRegistryMu.RLock()
 			t := trayRegistryMap[self]
 			trayRegistryMu.RUnlock()
-			if t != nil && t.callbacks != nil {
-				if fn := t.callbacks.OnClick; fn != nil {
-					fn()
-				}
+			if t == nil || t.callbacks == nil {
+				return 0
 			}
+
+			// NSButton actions do not receive the NSEvent. AppKit exposes the
+			// event that caused the action through NSApp.currentEvent, including
+			// its native click count and mouse/modifier information.
+			nsApp := darwinClasses.NSApplication.Send(darwinSels.sharedApplication)
+			event := nsApp.Send(darwinSels.currentEvent)
+			clickCount, buttonNumber, modifierFlags := 1, 0, uintptr(0)
+			if !event.IsNil() {
+				clickCount = int(event.Send(darwinSels.clickCount))
+				buttonNumber = int(event.Send(darwinSels.buttonNumber))
+				modifierFlags = uintptr(event.Send(darwinSels.modifierFlags))
+			}
+			dispatchDarwinClick(clickCount, buttonNumber, modifierFlags, t.callbacks)
 			return 0
 		})
 		darwin.ClassAddMethod(cls, darwin.RegisterSelector("trayClicked:"), trayClickedIMP, "v@:@")
@@ -913,4 +936,30 @@ func (t *darwinTray) destroyOnMainThread() {
 
 func shouldStopDarwinApplication(remainingTrays int) bool {
 	return remainingTrays == 0
+}
+
+const (
+	nsLeftMouseButton          = 0
+	nsEventModifierFlagControl = 1 << 18
+)
+
+// dispatchDarwinClick invokes the callback for a plain left-button click.
+// AppKit reports the complete click count, so a double click is dispatched
+// once and subsequent click counts are deliberately ignored. Right-click and
+// Control-click are left to AppKit so attached menus remain immediately usable.
+func dispatchDarwinClick(clickCount, buttonNumber int, modifierFlags uintptr, callbacks *Callbacks) {
+	if callbacks == nil || buttonNumber != nsLeftMouseButton || modifierFlags&nsEventModifierFlagControl != 0 {
+		return
+	}
+
+	switch clickCount {
+	case 1:
+		if callbacks.OnClick != nil {
+			callbacks.OnClick()
+		}
+	case 2:
+		if callbacks.OnDoubleClick != nil {
+			callbacks.OnDoubleClick()
+		}
+	}
 }
