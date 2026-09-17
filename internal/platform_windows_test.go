@@ -227,7 +227,7 @@ func TestUpdateItem_NormalItem_Regression(t *testing.T) {
 	if err := tray.UpdateItem(top); err != nil {
 		t.Fatalf("UpdateItem top: %v", err)
 	}
-	got, _ := getMenuItemInfo(t, tray.hmenu, uintptr(tray.itemIDs[top.ID()]), false)
+	got, _ := getMenuItemInfo(t, tray.hmenu, uintptr(top.ID()), false)
 	if got != "Tops" {
 		t.Errorf("top label = %q, want %q", got, "Tops")
 	}
@@ -237,9 +237,58 @@ func TestUpdateItem_NormalItem_Regression(t *testing.T) {
 	if err := tray.UpdateItem(subItem); err != nil {
 		t.Fatalf("UpdateItem subItem: %v", err)
 	}
-	got, _ = getMenuItemInfo(t, tray.itemHMenus[subItem.ID()], uintptr(tray.itemIDs[subItem.ID()]), false)
+	got, _ = getMenuItemInfo(t, tray.itemHMenus[subItem.ID()], uintptr(subItem.ID()), false)
 	if got != "Subbed" {
 		t.Errorf("sub item label = %q, want %q", got, "Subbed")
+	}
+}
+
+func TestSetMenu_CommandIDsAreStablePerItem(t *testing.T) {
+	tray := newTestWin32Tray()
+
+	shared := NewMenu().Add("Shared", nil)
+	removed := NewMenu().Add("Removed", nil)
+
+	menuA := NewMenu()
+	menuA.Items = append(menuA.Items, shared, removed)
+
+	if err := tray.SetMenu(menuA); err != nil {
+		t.Fatalf("SetMenu A: %v", err)
+	}
+	if _, ok := tray.cmdItems[shared.ID()]; !ok {
+		t.Fatal("shared item missing from cmdItems after first SetMenu")
+	}
+
+	// Rebuild with the same *MenuItem (shared) plus a brand new one; the
+	// removed item is gone from the new menu.
+	fresh := NewMenu().Add("Fresh", nil)
+	menuB := NewMenu()
+	menuB.Items = append(menuB.Items, shared, fresh)
+
+	if err := tray.SetMenu(menuB); err != nil {
+		t.Fatalf("SetMenu B: %v", err)
+	}
+	defer func() { destroyMenu(tray.hmenu) }()
+
+	// Native menu entries are addressed by the stable item ID.
+	if got, _ := getMenuItemInfo(t, tray.hmenu, uintptr(shared.ID()), false); got != "Shared" {
+		t.Errorf("shared item native label = %q, want %q", got, "Shared")
+	}
+	if got, _ := getMenuItemInfo(t, tray.hmenu, uintptr(fresh.ID()), false); got != "Fresh" {
+		t.Errorf("fresh item native label = %q, want %q", got, "Fresh")
+	}
+
+	// A stale ID for an item that was removed must not dispatch after rebuild.
+	if _, ok := tray.cmdItems[removed.ID()]; ok {
+		t.Error("removed item's command ID still dispatches after rebuild")
+	}
+
+	// Core invariant: every command ID maps to the item carrying that same
+	// stable ID, so a stale command ID can never fire a different item.
+	for cmdID, item := range tray.cmdItems {
+		if item.ID() != cmdID {
+			t.Errorf("cmdItems[%d] maps to item %d (aliasing)", cmdID, item.ID())
+		}
 	}
 }
 

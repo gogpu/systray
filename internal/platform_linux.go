@@ -66,10 +66,11 @@ type linuxTray struct {
 	trayID    TrayID
 	callbacks *Callbacks
 
-	menu      *Menu
-	menuItems map[int32]*MenuItem // dbus id -> item for Event dispatch
-	itemIDs   map[uint32]int32    // MenuItem.ID() -> dbus menu item ID
-	menuRev   uint32              // layout revision for dbusmenu
+	menu       *Menu
+	menuItems  map[int32]*MenuItem // stable dbus id -> item for Event dispatch
+	itemIDs    map[uint32]int32    // MenuItem.ID() -> stable dbus menu item ID
+	nextMenuID int32               // monotonic, never reset or reused (0 is the root)
+	menuRev    uint32              // layout revision for dbusmenu
 
 	iconPixmap []dbusPixmap // cached ARGB pixmap
 	tooltip    string
@@ -83,11 +84,12 @@ type linuxTray struct {
 // NewPlatformTray creates a Linux system tray implementation via D-Bus SNI.
 func NewPlatformTray(callbacks *Callbacks) PlatformTray {
 	return &linuxTray{
-		callbacks: callbacks,
-		menuItems: make(map[int32]*MenuItem),
-		itemIDs:   make(map[uint32]int32),
-		status:    sniStatusPassive,
-		quit:      make(chan struct{}),
+		callbacks:  callbacks,
+		menuItems:  make(map[int32]*MenuItem),
+		itemIDs:    make(map[uint32]int32),
+		nextMenuID: 1,
+		status:     sniStatusPassive,
+		quit:       make(chan struct{}),
 	}
 }
 
@@ -379,13 +381,24 @@ func (t *linuxTray) SetTooltip(text string) error {
 }
 
 // SetMenu attaches a context menu. The menu is exposed via the dbusmenu protocol.
+//
+// dbusmenu IDs are stable per MenuItem and are never reset or reused, so a
+// stale activation ID can only ever resolve to the same item (if it is still
+// in the menu) or to nothing — never to a different item.
 func (t *linuxTray) SetMenu(menu *Menu) error {
 	t.mu.Lock()
 	t.menu = menu
 	t.menuItems = make(map[int32]*MenuItem)
-	t.itemIDs = make(map[uint32]int32)
 	if menu != nil {
-		t.buildMenuItemMap(menu.Items, 1)
+		t.registerMenuItems(menu.Items)
+	}
+	// Drop bookkeeping for items no longer in the menu so itemIDs stays bounded
+	// across frequent rebuilds. nextMenuID is monotonic, so a pruned ID is
+	// never handed to a different item.
+	for itemID, id := range t.itemIDs {
+		if _, ok := t.menuItems[id]; !ok {
+			delete(t.itemIDs, itemID)
+		}
 	}
 	t.menuRev++
 	rev := t.menuRev
@@ -401,19 +414,28 @@ func (t *linuxTray) SetMenu(menu *Menu) error {
 	return nil
 }
 
-// buildMenuItemMap recursively assigns IDs to menu items and stores them
-// in the menuItems map for event dispatch. Returns the next available ID.
-func (t *linuxTray) buildMenuItemMap(items []*MenuItem, nextID int32) int32 {
+// registerMenuItems records the dispatch map (stable dbus ID -> item) for the
+// given tree and assigns each item its stable dbusmenu ID on first sight.
+// Caller must hold t.mu.
+func (t *linuxTray) registerMenuItems(items []*MenuItem) {
 	for _, item := range items {
-		id := nextID
+		id, ok := t.itemIDs[item.ID()]
+		if !ok {
+			id = t.nextMenuID
+			t.nextMenuID++
+			t.itemIDs[item.ID()] = id
+		}
 		t.menuItems[id] = item
-		t.itemIDs[item.ID()] = id
-		nextID++
 		if item.Type == MenuItemSubmenu && item.Submenu != nil {
-			nextID = t.buildMenuItemMap(item.Submenu.Items, nextID)
+			t.registerMenuItems(item.Submenu.Items)
 		}
 	}
-	return nextID
+}
+
+// dbusID returns the item's stable dbusmenu ID, or 0 if it is not part of the
+// current menu. Callers must hold t.mu.
+func (t *linuxTray) dbusID(item *MenuItem) int32 {
+	return t.itemIDs[item.ID()]
 }
 
 // UpdateItem updates a single menu item's properties and emits ItemsPropertiesUpdated
@@ -428,7 +450,12 @@ func (t *linuxTray) updateItem(item menuItemSnapshot) error {
 	}
 
 	t.mu.RLock()
-	dbusID, ok := t.itemIDs[item.id]
+	menuID, ok := t.itemIDs[item.id]
+	if ok {
+		// The item's ID is permanent while it is in the menu, but it must
+		// still be part of the current menu for an in-place update to apply.
+		_, ok = t.menuItems[menuID]
+	}
 	t.mu.RUnlock()
 	if !ok {
 		return nil
@@ -452,7 +479,7 @@ func (t *linuxTray) updateItem(item menuItemSnapshot) error {
 		props["icon-data"] = dbus.MakeVariant(item.icon)
 	}
 
-	updated := []menuItemProps{{ID: dbusID, Props: props}}
+	updated := []menuItemProps{{ID: menuID, Props: props}}
 	removed := []menuItemRemovedProps{}
 
 	return t.conn.Emit(menuPath, menuInterface+".ItemsPropertiesUpdated", updated, removed)
@@ -664,7 +691,7 @@ func (m *dbusMenuService) buildLayout(id int32, maxDepth int32, currentDepth int
 		}
 		var children []dbus.Variant
 		if maxDepth != 0 && m.tray.menu != nil {
-			children = m.buildChildren(m.tray.menu.Items, 1, maxDepth, currentDepth+1)
+			children = m.buildChildren(m.tray.menu.Items, maxDepth, currentDepth+1)
 		}
 		return menuLayout{V0: 0, V1: rootProps, V2: children}
 	}
@@ -678,34 +705,32 @@ func (m *dbusMenuService) buildLayout(id int32, maxDepth int32, currentDepth int
 	props := m.itemProperties(item.snapshot())
 	var children []dbus.Variant
 	if item.Type == MenuItemSubmenu && item.Submenu != nil && maxDepth != 0 {
-		// Find the starting child ID for this submenu.
-		childStartID := m.findChildStartID(id)
-		if childStartID > 0 {
-			children = m.buildChildren(item.Submenu.Items, childStartID, maxDepth, currentDepth+1)
-		}
+		children = m.buildChildren(item.Submenu.Items, maxDepth, currentDepth+1)
 	}
 
 	return menuLayout{V0: id, V1: props, V2: children}
 }
 
 // buildChildren creates dbus.Variant entries for a list of menu items.
-func (m *dbusMenuService) buildChildren(items []*MenuItem, startID int32, maxDepth int32, currentDepth int32) []dbus.Variant {
+// Each entry reports the item's stable dbusmenu ID (assigned by SetMenu), so
+// the layout and the Event dispatch map always agree.
+func (m *dbusMenuService) buildChildren(items []*MenuItem, maxDepth int32, currentDepth int32) []dbus.Variant {
 	children := make([]dbus.Variant, 0, len(items))
-	nextID := startID
 
 	for _, item := range items {
-		id := nextID
-		nextID++
+		id := m.tray.dbusID(item)
+		if id == 0 {
+			// Not part of the registered menu; 0 is the root ID.
+			continue
+		}
 
 		props := m.itemProperties(item.snapshot())
 		var subChildren []dbus.Variant
 
 		if item.Type == MenuItemSubmenu && item.Submenu != nil {
 			if maxDepth < 0 || currentDepth < maxDepth {
-				subChildren = m.buildChildren(item.Submenu.Items, nextID, maxDepth, currentDepth+1)
+				subChildren = m.buildChildren(item.Submenu.Items, maxDepth, currentDepth+1)
 			}
-			// Advance nextID past all submenu items.
-			nextID = m.advancePastSubmenu(item.Submenu, nextID)
 		}
 
 		child := menuLayout{V0: id, V1: props, V2: subChildren}
@@ -713,25 +738,6 @@ func (m *dbusMenuService) buildChildren(items []*MenuItem, startID int32, maxDep
 	}
 
 	return children
-}
-
-// advancePastSubmenu calculates the next available ID after all items in a submenu.
-func (m *dbusMenuService) advancePastSubmenu(menu *Menu, startID int32) int32 {
-	nextID := startID
-	for _, item := range menu.Items {
-		nextID++
-		if item.Type == MenuItemSubmenu && item.Submenu != nil {
-			nextID = m.advancePastSubmenu(item.Submenu, nextID)
-		}
-	}
-	return nextID
-}
-
-// findChildStartID finds the start ID of children for a submenu item.
-func (m *dbusMenuService) findChildStartID(parentID int32) int32 {
-	// The children of item with parentID start at parentID+1 in our
-	// sequential numbering scheme (same as buildMenuItemMap).
-	return parentID + 1
 }
 
 // itemProperties converts a MenuItem to dbusmenu properties.
