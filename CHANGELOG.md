@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Clicking a menu item could activate a different item's callback when `SetMenu` rebuilt the menu while it was open.** Every backend renumbered its native item IDs on each `SetMenu`, so a click resolved against the menu on screen was looked up in the replacement's map. Menu items now carry stable IDs, and a rebuild that arrives while a menu is displayed is queued and applied when the menu closes (Windows: when `TrackPopupMenu` returns; macOS: in `NSMenuDelegate`'s `menuWillOpen:`/`menuDidClose:`). The displayed menu therefore keeps dispatching its own items for the whole interaction, and a stale ID can only ever resolve to the same item or to nothing — never to a different one. On Windows this also removes the destroy-while-tracked undefined behavior and the unsynchronized menu-state access. ([#39](https://github.com/gogpu/systray/issues/39))
+
 ## [0.3.0] - 2026-08-30
 
 ### Added
