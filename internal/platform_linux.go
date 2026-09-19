@@ -123,15 +123,17 @@ func (t *linuxTray) Create() error {
 	// Export SNI properties.
 	sniProps, err := prop.Export(conn, sniPath, prop.Map{
 		sniInterface: {
-			"Category":      {Value: "ApplicationStatus", Writable: false, Emit: prop.EmitConst, Callback: nil},
-			"Id":            {Value: t.busName, Writable: false, Emit: prop.EmitConst, Callback: nil},
-			"Title":         {Value: "", Writable: false, Emit: prop.EmitTrue, Callback: nil},
-			"Status":        {Value: sniStatusPassive, Writable: false, Emit: prop.EmitTrue, Callback: nil},
-			"IconName":      {Value: "", Writable: false, Emit: prop.EmitTrue, Callback: nil},
-			"IconPixmap":    {Value: []dbusPixmap{}, Writable: false, Emit: prop.EmitTrue, Callback: nil},
-			"ToolTip":       {Value: dbusTooltip{}, Writable: false, Emit: prop.EmitTrue, Callback: nil},
-			"Menu":          {Value: dbus.ObjectPath(menuPath), Writable: false, Emit: prop.EmitConst, Callback: nil},
-			"ItemIsMenu":    {Value: true, Writable: false, Emit: prop.EmitConst, Callback: nil},
+			"Category":   {Value: "ApplicationStatus", Writable: false, Emit: prop.EmitConst, Callback: nil},
+			"Id":         {Value: t.busName, Writable: false, Emit: prop.EmitConst, Callback: nil},
+			"Title":      {Value: "", Writable: false, Emit: prop.EmitTrue, Callback: nil},
+			"Status":     {Value: sniStatusPassive, Writable: false, Emit: prop.EmitTrue, Callback: nil},
+			"IconName":   {Value: "", Writable: false, Emit: prop.EmitTrue, Callback: nil},
+			"IconPixmap": {Value: []dbusPixmap{}, Writable: false, Emit: prop.EmitTrue, Callback: nil},
+			"ToolTip":    {Value: dbusTooltip{}, Writable: false, Emit: prop.EmitTrue, Callback: nil},
+			"Menu":       {Value: dbus.ObjectPath(menuPath), Writable: false, Emit: prop.EmitConst, Callback: nil},
+			// false lets StatusNotifier hosts dispatch primary Activate to OnClick;
+			// the exported dbusmenu remains available for the context-menu action.
+			"ItemIsMenu":    {Value: false, Writable: false, Emit: prop.EmitConst, Callback: nil},
 			"WindowId":      {Value: int32(0), Writable: false, Emit: prop.EmitConst, Callback: nil},
 			"IconThemePath": {Value: "", Writable: false, Emit: prop.EmitConst, Callback: nil},
 		},
