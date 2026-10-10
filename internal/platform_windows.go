@@ -30,7 +30,7 @@ const (
 	nifState    = 0x00000008
 	nifInfo     = 0x00000010
 	nifRealtime = 0x00000040
-	nifShovel   = 0x00000080
+	nifShowTip  = 0x00000080
 )
 
 // NOTIFYICONDATA.dwInfoFlags constants for balloon notification icons.
@@ -531,7 +531,6 @@ func (t *win32Tray) Show() error {
 	}
 
 	nid := t.makeNID()
-	nid.uFlags = nifMessage | nifIcon | nifTip
 
 	ret, _, _ := procShellNotifyIconW.Call(nimAdd, uintptr(unsafe.Pointer(&nid)))
 	if ret == 0 {
@@ -658,6 +657,7 @@ func (t *win32Tray) makeNID() notifyIconData {
 		cbSize:           uint32(unsafe.Sizeof(notifyIconData{})),
 		hWnd:             t.hwnd,
 		uID:              t.uid,
+		uFlags:           nifMessage | nifIcon | nifTip | nifShowTip,
 		uCallbackMessage: uint32(wmTrayCallback),
 		hIcon:            t.hicon,
 	}
@@ -680,7 +680,6 @@ func (t *win32Tray) makeNID() notifyIconData {
 // modifyIcon sends NIM_MODIFY to update the icon/tooltip in the tray.
 func (t *win32Tray) modifyIcon() error {
 	nid := t.makeNID()
-	nid.uFlags = nifMessage | nifIcon | nifTip
 
 	ret, _, _ := procShellNotifyIconW.Call(nimModify, uintptr(unsafe.Pointer(&nid)))
 	if ret == 0 {
