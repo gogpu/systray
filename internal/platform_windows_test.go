@@ -44,6 +44,21 @@ func newTestWin32Tray() *win32Tray {
 	return NewPlatformTray(nil).(*win32Tray)
 }
 
+func TestMakeNIDEnablesHoverTooltip(t *testing.T) {
+	tray := newTestWin32Tray()
+	tray.tooltip = "Test Tooltip"
+	data := tray.makeNID()
+	if data.uFlags&nifShowTip == 0 {
+		t.Fatal("notification icon must enable NIF_SHOWTIP for version 4 hover tooltips")
+	}
+	if data.uFlags&nifTip == 0 {
+		t.Fatal("notification icon must include tooltip text")
+	}
+	if got := windows.UTF16ToString(data.szTip[:]); got != tray.tooltip {
+		t.Errorf("tooltip = %q, want %q", got, tray.tooltip)
+	}
+}
+
 func TestShouldStopWin32MessageLoop(t *testing.T) {
 	tests := []struct {
 		name                string
