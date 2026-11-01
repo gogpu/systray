@@ -22,7 +22,7 @@ func getMenuItemInfo(t *testing.T, hmenu uintptr, uItem uintptr, byPosition bool
 	mii := menuItemInfoW{
 		cbSize:     uint32(unsafe.Sizeof(menuItemInfoW{})),
 		fMask:      miimString | miimState,
-		dwTypeData: uintptr(unsafe.Pointer(&buf[0])),
+		dwTypeData: &buf[0],
 		cch:        uint32(len(buf)),
 	}
 

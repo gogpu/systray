@@ -156,9 +156,12 @@ type menuItemInfoW struct {
 	hbmpChecked   uintptr
 	hbmpUnchecked uintptr
 	dwItemData    uintptr
-	dwTypeData    uintptr
-	cch           uint32
-	hbmpItem      uintptr
+	// dwTypeData is a typed pointer, not a uintptr: C reads it through the
+	// struct, outside the //go:uintptrescapes argument list, so only a Go
+	// pointer keeps the UTF-16 string alive during the call.
+	dwTypeData *uint16
+	cch        uint32
+	hbmpItem   uintptr
 }
 
 // msg is the Win32 MSG structure for the message loop.
@@ -868,7 +871,7 @@ func (t *win32Tray) updateItem(item menuItemSnapshot) error {
 		cbSize:     uint32(unsafe.Sizeof(menuItemInfoW{})),
 		fMask:      miimString | miimState,
 		fState:     fState,
-		dwTypeData: uintptr(unsafe.Pointer(label)),
+		dwTypeData: label,
 	}
 
 	fByPosition := uintptr(0)
