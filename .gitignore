@@ -17,6 +17,9 @@
 # Private dev docs (not committed)
 docs/dev/
 
+# Private project management: STATUS, HANDOFF, kanban (not committed)
+.pm/
+
 # AI settings
 .claude/
 .goda/
