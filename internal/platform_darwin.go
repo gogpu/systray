@@ -16,6 +16,11 @@ import (
 // NSVariableStatusItemLength tells NSStatusBar to size the item to fit its content.
 const nsVariableStatusItemLength = -1.0
 
+// iconSize is the icon size in points. The menu bar is about 22 points high
+// (24 on notched displays), so an 18 point icon leaves room above and below,
+// like the system icons.
+const iconSize = 18.0
+
 // NSApplicationActivationPolicyAccessory creates an app without dock icon.
 // Systray apps typically run as accessories, not as regular dock-visible apps.
 const nsApplicationActivationPolicyAccessory = 1
@@ -33,6 +38,7 @@ var darwinSels struct {
 	alloc   darwin.SEL
 	init    darwin.SEL
 	release darwin.SEL
+	retain  darwin.SEL
 
 	// NSApplication
 	sharedApplication     darwin.SEL
@@ -42,6 +48,10 @@ var darwinSels struct {
 	finishLaunching       darwin.SEL
 	nextEventMatchingMask darwin.SEL // nextEventMatchingMask:untilDate:inMode:dequeue:
 	sendEvent             darwin.SEL
+
+	// NSRunningApplication
+	currentApplication  darwin.SEL
+	isFinishedLaunching darwin.SEL
 
 	// NSStatusBar
 	systemStatusBar   darwin.SEL
@@ -93,6 +103,7 @@ var darwinClasses struct {
 	once sync.Once
 
 	NSApplication            darwin.Class
+	NSRunningApplication     darwin.Class
 	NSStatusBar              darwin.Class
 	NSImage                  darwin.Class
 	NSMenu                   darwin.Class
@@ -109,6 +120,7 @@ func initDarwinSels() {
 		darwinSels.alloc = darwin.RegisterSelector("alloc")
 		darwinSels.init = darwin.RegisterSelector("init")
 		darwinSels.release = darwin.RegisterSelector("release")
+		darwinSels.retain = darwin.RegisterSelector("retain")
 
 		// NSApplication
 		darwinSels.sharedApplication = darwin.RegisterSelector("sharedApplication")
@@ -119,6 +131,10 @@ func initDarwinSels() {
 		darwinSels.nextEventMatchingMask = darwin.RegisterSelector(
 			"nextEventMatchingMask:untilDate:inMode:dequeue:")
 		darwinSels.sendEvent = darwin.RegisterSelector("sendEvent:")
+
+		// NSRunningApplication
+		darwinSels.currentApplication = darwin.RegisterSelector("currentApplication")
+		darwinSels.isFinishedLaunching = darwin.RegisterSelector("isFinishedLaunching")
 
 		// NSStatusBar
 		darwinSels.systemStatusBar = darwin.RegisterSelector("systemStatusBar")
@@ -170,6 +186,7 @@ func initDarwinSels() {
 func initDarwinClasses() {
 	darwinClasses.once.Do(func() {
 		darwinClasses.NSApplication = darwin.GetClass("NSApplication")
+		darwinClasses.NSRunningApplication = darwin.GetClass("NSRunningApplication")
 		darwinClasses.NSStatusBar = darwin.GetClass("NSStatusBar")
 		darwinClasses.NSImage = darwin.GetClass("NSImage")
 		darwinClasses.NSMenu = darwin.GetClass("NSMenu")
@@ -232,6 +249,10 @@ func NewPlatformTray(callbacks *Callbacks) PlatformTray {
 // "CGSConnectionByID" assertion (known macOS pattern: status items must not
 // be created before applicationDidFinishLaunching). All steps are idempotent,
 // safe to call from Create() and Run().
+//
+// When the process has already finished launching, a host application (for
+// example a GTK or Qt app) owns NSApplication. The activation policy is left
+// alone in that case, so the host keeps its Dock icon and main menu.
 func ensureNSApplicationLaunched() {
 	initDarwinSels()
 	initDarwinClasses()
@@ -239,6 +260,10 @@ func ensureNSApplicationLaunched() {
 	// Get or create the shared NSApplication.
 	nsApp := darwinClasses.NSApplication.Send(darwinSels.sharedApplication)
 	if nsApp.IsNil() {
+		return
+	}
+
+	if isApplicationFinishedLaunching() {
 		return
 	}
 
@@ -269,6 +294,11 @@ func (t *darwinTray) Create() error {
 	if t.statusItem.IsNil() {
 		return errors.New("darwin: failed to create NSStatusItem")
 	}
+
+	// statusItemWithLength: returns an autoreleased object, and the status bar
+	// does not keep it alive. Retain it, or the icon disappears as soon as the
+	// autorelease pool drains (for example inside a GTK main loop).
+	t.statusItem.Send(darwinSels.retain)
 
 	// Get the button associated with the status item.
 	t.btn = t.statusItem.Send(darwinSels.button)
@@ -381,7 +411,7 @@ func registerGoSystrayTarget() (darwin.Class, error) {
 }
 
 // SetIcon sets the tray icon from PNG bytes.
-// The image is resized to 22x22 points, the standard macOS menu bar icon size.
+// The image is resized to iconSize points, so it fits inside the menu bar.
 func (t *darwinTray) SetIcon(png []byte) error {
 	if t.statusItem.IsNil() || t.btn.IsNil() {
 		return errors.New("darwin: tray not created")
@@ -422,7 +452,7 @@ func (t *darwinTray) SetTemplateIcon(png []byte) error {
 }
 
 // createNSImage creates an NSImage from PNG data, optionally marking it as
-// a template image. The image is resized to 22x22 points.
+// a template image. The image is resized to iconSize points.
 func createNSImage(png []byte, template bool) darwin.ID {
 	initDarwinSels()
 	initDarwinClasses()
@@ -443,8 +473,8 @@ func createNSImage(png []byte, template bool) darwin.ID {
 		return 0
 	}
 
-	// [nsImage setSize:NSMakeSize(22, 22)] — standard menu bar icon size
-	nsImage.SendSize(darwinSels.setSize, darwin.NSSize{Width: 22, Height: 22})
+	// [nsImage setSize:NSMakeSize(iconSize, iconSize)]
+	nsImage.SendSize(darwinSels.setSize, darwin.NSSize{Width: iconSize, Height: iconSize})
 
 	// [nsImage setTemplate:YES] if requested
 	if template {
@@ -757,6 +787,7 @@ func (t *darwinTray) Show() error {
 	if t.statusItem.IsNil() {
 		return errors.New("darwin: failed to re-create NSStatusItem")
 	}
+	t.statusItem.Send(darwinSels.retain)
 
 	t.btn = t.statusItem.Send(darwinSels.button)
 
@@ -791,6 +822,7 @@ func (t *darwinTray) Hide() error {
 
 	// [statusBar removeStatusItem:statusItem]
 	t.statusBar.SendPtr(darwinSels.removeStatusItem, t.statusItem.Ptr())
+	t.statusItem.Send(darwinSels.release)
 	t.statusItem = 0
 	t.btn = 0
 
@@ -823,11 +855,8 @@ func (t *darwinTray) Run() error {
 	runningNSApp = nsApp
 	trayRegistryMu.Unlock()
 
-	// Set activation policy to accessory (no dock icon for tray-only apps).
-	nsApp.SendInt(darwinSels.setActivationPolicy, nsApplicationActivationPolicyAccessory)
-
 	// Finish launching is required before the event loop can process events.
-	nsApp.Send(darwinSels.finishLaunching)
+	ensureNSApplicationLaunched()
 
 	// Run the Cocoa event loop. This blocks until [NSApp stop:] is sent and
 	// the wake event posted by Destroy() is processed.
@@ -876,6 +905,7 @@ func (t *darwinTray) destroyOnMainThread() {
 	// Remove the status item from the menu bar.
 	if !t.statusBar.IsNil() && !t.statusItem.IsNil() {
 		t.statusBar.SendPtr(darwinSels.removeStatusItem, t.statusItem.Ptr())
+		t.statusItem.Send(darwinSels.release)
 	}
 
 	// Unregister from tray registry before releasing the target. Only the final
@@ -909,6 +939,18 @@ func (t *darwinTray) destroyOnMainThread() {
 		nsApp.SendPtr(darwinSels.stop, 0)
 		darwin.PostAppDefinedEvent(nsApp)
 	}
+}
+
+// isApplicationFinishedLaunching reports whether the current process has
+// finished launching: [[NSRunningApplication currentApplication] isFinishedLaunching].
+func isApplicationFinishedLaunching() bool {
+	app := darwinClasses.NSRunningApplication.Send(darwinSels.currentApplication)
+	if app.IsNil() {
+		return false
+	}
+
+	// BOOL is returned in the low byte.
+	return app.Send(darwinSels.isFinishedLaunching)&0xff != 0
 }
 
 func shouldStopDarwinApplication(remainingTrays int) bool {
