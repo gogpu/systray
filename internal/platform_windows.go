@@ -280,8 +280,14 @@ type win32Tray struct {
 	// pendingMenu is the newest menu requested while a popup was open. It is
 	// applied when the popup returns (or just before the next one opens), so
 	// rebuilds stay clickable instead of being dropped as stale IDs.
+	//
+	// hasPending records that a SetMenu is queued. It cannot be inferred from
+	// pendingMenu/pendingHMenu: SetMenu(nil) queues a null menu, which is a
+	// meaningful request (remove the menu) and must not read as "nothing
+	// queued" when the popup returns.
 	pendingMenu    *menuItemMap
 	pendingHMenu   uintptr
+	hasPending     bool
 	pendingDestroy []uintptr // HMENUs freed once the in-flight popup returns
 	destroyed      bool      // the message window is gone; only free handles
 }
@@ -513,11 +519,11 @@ func (t *win32Tray) SetMenu(menu *Menu) error {
 	}
 
 	t.menuMu.Lock()
-	if t.popupOpen || t.pendingMenu != nil {
+	if t.popupOpen || t.hasPending {
 		// A popup is being tracked: publishing this menu now would renumber the
 		// command IDs of the menu on screen. Queue it instead.
 		t.retirePendingMenuLocked()
-		t.pendingMenu, t.pendingHMenu = newState, newHMenu
+		t.pendingMenu, t.pendingHMenu, t.hasPending = newState, newHMenu, true
 		t.menuMu.Unlock()
 		return nil
 	}
@@ -539,6 +545,10 @@ func (t *win32Tray) publishMenuLocked(menu *menuItemMap, hmenu uintptr) {
 // retireHMenuLocked frees an HMENU that is no longer displayed. If a popup is
 // still tracking it, destruction is deferred until the popup returns;
 // destroying a menu that TrackPopupMenu is tracking is undefined behavior.
+//
+// The deferred path is defensive: SetMenu queues instead of publishing while a
+// popup is open, so in the normal flow it is unreachable and only a re-entrant
+// showContextMenu can get here.
 // Caller must hold menuMu.
 func (t *win32Tray) retireHMenuLocked(hmenu uintptr) {
 	if hmenu == 0 {
@@ -555,20 +565,28 @@ func (t *win32Tray) retireHMenuLocked(hmenu uintptr) {
 // Caller must hold menuMu.
 func (t *win32Tray) retirePendingMenuLocked() {
 	hmenu := t.pendingHMenu
-	t.pendingMenu, t.pendingHMenu = nil, 0
+	t.pendingMenu, t.pendingHMenu, t.hasPending = nil, 0, false
 	if hmenu != 0 && hmenu != t.popupHMenu {
 		destroyMenu(hmenu)
 	}
 }
 
+// takePendingMenuLocked removes the queued menu, which may be null (a queued
+// SetMenu(nil)). The returned flag reports whether anything was queued at all.
+// Caller must hold menuMu.
+func (t *win32Tray) takePendingMenuLocked() (*menuItemMap, uintptr, bool) {
+	menu, hmenu, queued := t.pendingMenu, t.pendingHMenu, t.hasPending
+	t.pendingMenu, t.pendingHMenu, t.hasPending = nil, 0, false
+	return menu, hmenu, queued
+}
+
 // applyPendingMenuLocked publishes the newest queued menu. Caller must hold
 // menuMu.
 func (t *win32Tray) applyPendingMenuLocked() {
-	if t.pendingMenu == nil && t.pendingHMenu == 0 {
+	menu, hmenu, queued := t.takePendingMenuLocked()
+	if !queued {
 		return
 	}
-	menu, hmenu := t.pendingMenu, t.pendingHMenu
-	t.pendingMenu, t.pendingHMenu = nil, 0
 	t.publishMenuLocked(menu, hmenu)
 }
 
@@ -583,23 +601,27 @@ func (t *win32Tray) finalizePopupLocked() {
 	deferred := t.pendingDestroy
 	t.pendingDestroy = nil
 
-	// The message window is gone: free what is safe and leave the popup's own
-	// menu to be released by the system when the tracked popup returns.
+	// The queued menu (if any) supersedes the one the popup displayed. A queued
+	// SetMenu(nil) is a real request to remove the menu, so the queue is read
+	// through hasPending, not from the handle being non-zero.
+	menu, hmenu, queued := t.takePendingMenuLocked()
+
+	// The message window is gone: nothing tracks the popup any more now that
+	// TrackPopupMenu has returned, so every handle can be freed.
 	if t.destroyed {
-		hmenu := t.pendingHMenu
-		t.pendingMenu, t.pendingHMenu = nil, 0
 		for _, h := range deferred {
 			if h != 0 && h != popupHMenu && h != hmenu {
 				destroyMenu(h)
 			}
 		}
+		if hmenu != popupHMenu {
+			destroyMenu(hmenu)
+		}
+		destroyMenu(popupHMenu)
 		return
 	}
 
-	// The queued menu (if any) supersedes the one the popup displayed.
-	menu, hmenu := t.pendingMenu, t.pendingHMenu
-	t.pendingMenu, t.pendingHMenu = nil, 0
-	if menu == nil && hmenu == 0 {
+	if !queued {
 		// Nothing was queued: keep whatever the popup displayed.
 		return
 	}
@@ -981,18 +1003,31 @@ func (t *win32Tray) UpdateItem(item *MenuItem) error {
 }
 
 func (t *win32Tray) updateItem(item menuItemSnapshot) error {
-	// Hold menuMu across the native call so a concurrent SetMenu cannot swap
+	// Hold menuMu across the native calls so a concurrent SetMenu cannot swap
 	// and free the owning HMENU underneath us.
 	t.menuMu.Lock()
 	defer t.menuMu.Unlock()
 
-	// In-place updates only apply to items of the current menu. Items of a menu
-	// queued behind an open popup are picked up when that menu is published.
-	state := t.menuState
-	if state == nil {
-		return nil
+	// The item can belong to the menu on screen and to a menu queued behind an
+	// open popup at the same time, so both are updated. The queued menu is not
+	// on screen yet; applying the change to it now is what keeps it from being
+	// published with the state it was built from.
+	var firstErr error
+	for _, state := range [2]*menuItemMap{t.menuState, t.pendingMenu} {
+		if state == nil {
+			continue
+		}
+		if err := t.updateItemInMenu(state, item); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
 
+	return firstErr
+}
+
+// updateItemInMenu applies a snapshot to the item's entry in one built menu, if
+// that menu owns the item. Caller must hold menuMu.
+func (t *win32Tray) updateItemInMenu(state *menuItemMap, item menuItemSnapshot) error {
 	hmenu, ok := state.owners[item.id]
 	if !ok || hmenu == 0 {
 		return nil
@@ -1092,12 +1127,12 @@ func trayWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 		t.destroyed = true
 		hMenus := []uintptr{t.hmenu, t.pendingHMenu}
 		t.hmenu, t.menuState = 0, nil
-		t.pendingHMenu, t.pendingMenu = 0, nil
+		t.pendingHMenu, t.pendingMenu, t.hasPending = 0, nil, false
 		deferred := t.pendingDestroy
 		t.pendingDestroy = nil
 		// WM_DESTROY can be delivered inside TrackPopupMenu's modal loop. A menu
-		// that popup is still tracking must not be destroyed here, so it is left
-		// for finalizePopupLocked once the popup returns.
+		// that popup is still tracking must not be destroyed here;
+		// finalizePopupLocked frees it once the popup returns.
 		popupHMenu := t.popupHMenu
 		t.menuMu.Unlock()
 		for _, h := range hMenus {

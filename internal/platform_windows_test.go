@@ -13,6 +13,16 @@ import (
 // updates landed on the native Win32 menu.
 var procGetMenuItemInfoW = windows.NewLazySystemDLL("user32.dll").NewProc("GetMenuItemInfoW")
 
+// procIsMenu is used only by tests to check whether an HMENU is still valid,
+// i.e. whether it was freed.
+var procIsMenu = windows.NewLazySystemDLL("user32.dll").NewProc("IsMenu")
+
+func isMenu(t *testing.T, hmenu uintptr) bool {
+	t.Helper()
+	ret, _, _ := procIsMenu.Call(hmenu)
+	return ret != 0
+}
+
 // getMenuItemInfo reads back a native menu item's string and state via
 // GetMenuItemInfoW, mirroring the menuItemInfoW layout used by SetMenuItemInfoW.
 func getMenuItemInfo(t *testing.T, hmenu uintptr, uItem uintptr, byPosition bool) (string, uint32) {
@@ -500,9 +510,13 @@ func TestSetMenu_QueuedWhilePopupOpen_AppliedOnNextOpen(t *testing.T) {
 	// Publishing the queued menu happens at the start of the next popup.
 	tray.menuMu.Lock()
 	tray.applyPendingMenuLocked()
-	state, hmenu := tray.menuState, tray.hmenu
+	state, hmenu, hasPending := tray.menuState, tray.hmenu, tray.hasPending
 	tray.menuMu.Unlock()
 	defer destroyMenu(hmenu)
+
+	if hasPending {
+		t.Error("queue flag still set after the queued menu was applied")
+	}
 
 	if _, ok := state.cmd[third.ID()]; !ok {
 		t.Fatal("newest queued menu was not applied")
@@ -592,5 +606,219 @@ func TestPopulateMenu_NilSubmenu_DoesNotShiftPositions(t *testing.T) {
 	}
 	if pos != 1 {
 		t.Errorf("container position = %d, want 1", pos)
+	}
+}
+
+// TestSetMenu_QueuedRemovalIsApplied covers a SetMenu that arrives while a popup
+// is open and carries no menu at all: SetMenu(nil) and an empty menu are real
+// requests to remove the menu, and they must not be mistaken for "nothing
+// queued" when the popup returns.
+func TestSetMenu_QueuedRemovalIsApplied(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		menu *Menu
+	}{
+		{name: "nil menu", menu: nil},
+		{name: "empty menu", menu: NewMenu()},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tray := newTestWin32Tray()
+
+			item := NewMenu().Add("Item", nil)
+			menu := NewMenu()
+			menu.Items = append(menu.Items, item)
+			if err := tray.SetMenu(menu); err != nil {
+				t.Fatalf("SetMenu: %v", err)
+			}
+
+			displayed := openPopupState(tray)
+			displayedHMenu := displayed.hmenu
+
+			if err := tray.SetMenu(test.menu); err != nil {
+				t.Fatalf("queued SetMenu: %v", err)
+			}
+
+			// The displayed menu must be untouched while the popup is open.
+			tray.menuMu.Lock()
+			queued := tray.hasPending
+			stillDisplayed := tray.hmenu
+			tray.menuMu.Unlock()
+			if !queued {
+				t.Fatal("queued removal not recorded as pending")
+			}
+			if stillDisplayed != displayedHMenu {
+				t.Fatalf("displayed HMENU changed while the popup was open: %#x -> %#x",
+					displayedHMenu, stillDisplayed)
+			}
+
+			// The popup is dismissed: the queued removal must take effect.
+			if got := tray.endPopup(0, displayed); got != nil {
+				t.Fatalf("dismissed popup resolved to %v", got)
+			}
+
+			tray.menuMu.Lock()
+			hmenu, state, pending := tray.hmenu, tray.menuState, tray.hasPending
+			tray.menuMu.Unlock()
+
+			if hmenu != 0 || state != nil {
+				t.Errorf("menu was not removed: hmenu=%#x state=%v", hmenu, state)
+			}
+			if pending {
+				t.Error("queue flag still set after the popup returned")
+			}
+		})
+	}
+}
+
+// TestUpdateItem_AppliesToQueuedMenu covers an update that arrives between a
+// queued SetMenu and its publish: the queued native menu was built from the
+// state at SetMenu time, so the update has to be applied to it as well.
+func TestUpdateItem_AppliesToQueuedMenu(t *testing.T) {
+	tray := newTestWin32Tray()
+
+	first := NewMenu().Add("First", nil)
+	menuA := NewMenu()
+	menuA.Items = append(menuA.Items, first)
+	if err := tray.SetMenu(menuA); err != nil {
+		t.Fatalf("SetMenu A: %v", err)
+	}
+
+	displayed := openPopupState(tray)
+
+	second := NewMenu().Add("Second", nil)
+	menuB := NewMenu()
+	menuB.Items = append(menuB.Items, second)
+	if err := tray.SetMenu(menuB); err != nil {
+		t.Fatalf("SetMenu B: %v", err)
+	}
+
+	tray.menuMu.Lock()
+	pendingHMenu := tray.pendingHMenu
+	tray.menuMu.Unlock()
+	if pendingHMenu == 0 {
+		t.Fatal("no menu queued behind the popup")
+	}
+
+	// The update arrives while the popup is still open.
+	second.Label = "Renamed"
+	second.Disabled = true
+	if err := tray.UpdateItem(second); err != nil {
+		t.Fatalf("UpdateItem: %v", err)
+	}
+
+	// It must have landed on the queued native menu, not only on the state the
+	// next SetMenu would start from.
+	if got, state := getMenuItemInfo(t, pendingHMenu, uintptr(second.ID()), false); got != "Renamed" {
+		t.Errorf("queued menu label = %q, want %q", got, "Renamed")
+	} else if state&mfsDisabled == 0 {
+		t.Error("queued menu item is not disabled")
+	}
+
+	// Publishing the queued menu keeps the updated state.
+	tray.endPopup(0, displayed)
+
+	tray.menuMu.Lock()
+	published := tray.hmenu
+	tray.menuMu.Unlock()
+	if published != pendingHMenu {
+		t.Fatalf("published menu = %#x, want the queued %#x", published, pendingHMenu)
+	}
+	if got, _ := getMenuItemInfo(t, published, uintptr(second.ID()), false); got != "Renamed" {
+		t.Errorf("published menu label = %q, want %q", got, "Renamed")
+	}
+	destroyMenu(published)
+}
+
+// TestUpdateItem_AppliesToBothMenus covers an item that is part of the displayed
+// menu and of the menu queued behind it: both native menus are updated.
+func TestUpdateItem_AppliesToBothMenus(t *testing.T) {
+	tray := newTestWin32Tray()
+
+	shared := NewMenu().Add("Shared", nil)
+	menuA := NewMenu()
+	menuA.Items = append(menuA.Items, shared)
+	if err := tray.SetMenu(menuA); err != nil {
+		t.Fatalf("SetMenu A: %v", err)
+	}
+
+	displayed := openPopupState(tray)
+	displayedHMenu := displayed.hmenu
+
+	menuB := NewMenu()
+	menuB.Items = append(menuB.Items, shared)
+	if err := tray.SetMenu(menuB); err != nil {
+		t.Fatalf("SetMenu B: %v", err)
+	}
+
+	tray.menuMu.Lock()
+	pendingHMenu := tray.pendingHMenu
+	tray.menuMu.Unlock()
+
+	shared.Label = "Renamed"
+	if err := tray.UpdateItem(shared); err != nil {
+		t.Fatalf("UpdateItem: %v", err)
+	}
+
+	for name, hmenu := range map[string]uintptr{
+		"displayed": displayedHMenu,
+		"queued":    pendingHMenu,
+	} {
+		if got, _ := getMenuItemInfo(t, hmenu, uintptr(shared.ID()), false); got != "Renamed" {
+			t.Errorf("%s menu label = %q, want %q", name, got, "Renamed")
+		}
+	}
+
+	tray.endPopup(0, displayed)
+	if got, _ := getMenuItemInfo(t, tray.hmenu, uintptr(shared.ID()), false); got != "Renamed" {
+		t.Errorf("published menu label = %q, want %q", got, "Renamed")
+	}
+	destroyMenu(tray.hmenu)
+}
+
+// TestPopup_WindowDestroyedDuringPopup_FreesMenus covers WM_DESTROY arriving
+// inside TrackPopupMenu's modal loop. The handler cannot free the tracked menu,
+// so it has to be freed once the popup returns instead of leaking until the
+// process exits.
+func TestPopup_WindowDestroyedDuringPopup_FreesMenus(t *testing.T) {
+	tray := newTestWin32Tray()
+
+	item := NewMenu().Add("Item", nil)
+	menuA := NewMenu()
+	menuA.Items = append(menuA.Items, item)
+	if err := tray.SetMenu(menuA); err != nil {
+		t.Fatalf("SetMenu A: %v", err)
+	}
+
+	displayed := openPopupState(tray)
+	displayedHMenu := displayed.hmenu
+
+	other := NewMenu().Add("Other", nil)
+	menuB := NewMenu()
+	menuB.Items = append(menuB.Items, other)
+	if err := tray.SetMenu(menuB); err != nil {
+		t.Fatalf("SetMenu B: %v", err)
+	}
+
+	// What WM_DESTROY does: free everything that is not being tracked, drop the
+	// state, and leave the tracked popup menu to finalizePopupLocked.
+	tray.menuMu.Lock()
+	pendingHMenu := tray.pendingHMenu
+	tray.destroyed = true
+	tray.hmenu, tray.menuState = 0, nil
+	tray.pendingHMenu, tray.pendingMenu, tray.hasPending = 0, nil, false
+	tray.menuMu.Unlock()
+	destroyMenu(pendingHMenu)
+
+	// TrackPopupMenu returns.
+	tray.endPopup(0, displayed)
+
+	tray.menuMu.Lock()
+	hmenu, state := tray.hmenu, tray.menuState
+	tray.menuMu.Unlock()
+	if hmenu != 0 || state != nil {
+		t.Errorf("destroyed tray still has a menu: hmenu=%#x state=%v", hmenu, state)
+	}
+	if isMenu(t, displayedHMenu) {
+		t.Errorf("popup menu %#x outlived WM_DESTROY and the popup", displayedHMenu)
 	}
 }

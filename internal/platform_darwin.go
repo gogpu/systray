@@ -71,6 +71,9 @@ var darwinSels struct {
 	menuWillOpen                darwin.SEL // NSMenuDelegate
 	menuDidClose                darwin.SEL // NSMenuDelegate
 
+	// NSMenuItem
+	menu darwin.SEL // menu (the NSMenu the item belongs to)
+
 	// NSObject main-thread dispatch
 	performSelectorOnMainThread darwin.SEL // performSelectorOnMainThread:withObject:waitUntilDone:
 
@@ -151,6 +154,10 @@ func initDarwinSels() {
 		darwinSels.setDelegate = darwin.RegisterSelector("setDelegate:")
 		darwinSels.menuWillOpen = darwin.RegisterSelector("menuWillOpen:")
 		darwinSels.menuDidClose = darwin.RegisterSelector("menuDidClose:")
+
+		// NSMenuItem
+		darwinSels.menu = darwin.RegisterSelector("menu")
+
 		darwinSels.performSelectorOnMainThread = darwin.RegisterSelector(
 			"performSelectorOnMainThread:withObject:waitUntilDone:")
 
@@ -195,25 +202,46 @@ type darwinTray struct {
 
 	// menuMu guards the menu bookkeeping below.
 	//
-	// menuActions and nsItems describe the menu the user can currently interact
-	// with: they are populated when SetMenu builds the NSMenu hierarchy and are
-	// keyed by the item's stable ID, so a click on a menu that has since been
-	// rebuilt resolves to the same item or to nothing — never to a different
-	// item. While a menu is on screen the maps are frozen and a rebuild is
-	// queued in pending*, then applied in menuDidClose:. That keeps the tag map
-	// and the displayed menu paired for the whole interaction.
-	menuMu      sync.Mutex
-	menuActions map[uint32]func()
-	nsItems     map[uint32]darwin.ID // item.ID() -> NSMenuItem handle (incl. submenus)
-	nsMenu      darwin.ID            // NSMenu currently attached to the status item
-	menuOpen    bool                 // an NSMenu is on screen right now
-
-	pendingActions map[uint32]func()
-	pendingItems   map[uint32]darwin.ID
-	pendingMenu    darwin.ID
-	hasPending     bool // a SetMenu is queued behind the open menu
+	// builds holds the menu trees built by SetMenu, newest first. A build is
+	// immutable once published and stays registered for as long as AppKit may
+	// still deliver a click from it: builds[0] is the menu attached to the
+	// status item, and builds[1] is the one it replaced, which is still needed
+	// while the action of a click on it is being delivered. A click is resolved
+	// against the build that owns the clicked NSMenuItem, never against "the
+	// current menu", so a rebuild can never renumber the menu on screen.
+	//
+	// While a menu is on screen a rebuild is queued in pending and published by
+	// menuDidClose:. That keeps the menu attached to the status item stable for
+	// the whole interaction; dispatch does not depend on it.
+	menuMu   sync.Mutex
+	builds   []*menuBuild
+	menuOpen bool       // an NSMenu is on screen right now
+	pending  *menuBuild // newest SetMenu queued behind the open menu
 
 	pendingUpdates chan menuItemSnapshot // buffered channel for main-thread dispatch
+}
+
+// menuBuild is one built NSMenu tree together with the lookup tables that
+// describe it. A build with a nil menu is a SetMenu(nil): it carries no menu
+// and no items, and publishing it detaches the menu from the status item.
+type menuBuild struct {
+	menu    darwin.ID            // root NSMenu
+	actions map[uint32]func()    // item.ID() -> callback
+	items   map[uint32]darwin.ID // item.ID() -> NSMenuItem handle (incl. submenus)
+	menus   map[uintptr]struct{} // every NSMenu handle of this build, root and submenus
+}
+
+// menuBuildRetention is how many built menus stay registered for click
+// resolution: the menu on screen and the one that was on screen when it was
+// replaced, whose action AppKit may deliver after it closed.
+const menuBuildRetention = 2
+
+func newMenuBuild() *menuBuild {
+	return &menuBuild{
+		actions: make(map[uint32]func()),
+		items:   make(map[uint32]darwin.ID),
+		menus:   make(map[uintptr]struct{}),
+	}
 }
 
 // goSystrayTargetClass is the custom ObjC class registered once for click handling.
@@ -236,8 +264,6 @@ var (
 func NewPlatformTray(callbacks *Callbacks) PlatformTray {
 	return &darwinTray{
 		callbacks:      callbacks,
-		menuActions:    make(map[uint32]func()),
-		nsItems:        make(map[uint32]darwin.ID),
 		pendingUpdates: make(chan menuItemSnapshot, 64),
 	}
 }
@@ -352,9 +378,11 @@ func registerGoSystrayTarget() (darwin.Class, error) {
 		darwin.ClassAddMethod(cls, darwin.RegisterSelector("trayClicked:"), trayClickedIMP, "v@:@")
 
 		// Add menuItemClicked: method — called when a menu item is clicked.
-		// The sender's tag is the item's stable MenuItem.ID(); it is looked up
-		// in the tag map of the menu that is on screen, so a stale tag resolves
-		// to the same item or to nothing, never to a different item.
+		// The sender's tag is the item's stable MenuItem.ID() and its NSMenu
+		// identifies the build it was created in, so the click is resolved
+		// against the menu the item actually belongs to. AppKit sends
+		// menuDidClose: before the item's action, so resolving against "the
+		// current menu" would drop clicks that a rebuild replaced in between.
 		// ObjC signature: -(void)menuItemClicked:(NSMenuItem*)sender → "v@:@"
 		menuClickedIMP := ffi.NewCallback(func(self, sel, sender uintptr) uintptr {
 			trayRegistryMu.RLock()
@@ -365,12 +393,9 @@ func registerGoSystrayTarget() (darwin.Class, error) {
 			}
 			tagSel := darwin.RegisterSelector("tag")
 			tag := darwin.ID(sender).Send(tagSel)
+			parent := darwin.ID(sender).Send(darwinSels.menu)
 
-			t.menuMu.Lock()
-			fn := t.menuActions[uint32(tag)]
-			t.menuMu.Unlock()
-
-			if fn != nil {
+			if fn := t.callbackForMenu(parent.Ptr(), uint32(tag)); fn != nil {
 				fn()
 			}
 			return 0
@@ -379,8 +404,8 @@ func registerGoSystrayTarget() (darwin.Class, error) {
 
 		// Add menuWillOpen:/menuDidClose: — NSMenuDelegate hooks that mark when a
 		// menu is on screen. SetMenu queues a rebuild while a menu is open and
-		// publishes it here, so the displayed menu keeps dispatching its own
-		// items for the whole interaction.
+		// publishes it here, so the menu the user is interacting with is not
+		// swapped underneath the pointer.
 		// ObjC signature: -(void)menuWillOpen:(NSMenu*)menu → "v@:@"
 		menuWillOpenIMP := ffi.NewCallback(func(self, sel, sender uintptr) uintptr {
 			trayRegistryMu.RLock()
@@ -517,112 +542,178 @@ func (t *darwinTray) SetTooltip(text string) error {
 }
 
 // SetMenu builds an NSMenu from our Menu struct and attaches it to the status
-// item.
+// item. A nil (or empty) menu removes the menu, so a click on the status item
+// fires trayClicked: instead.
 //
 // If a menu is currently on screen the new tree is built and queued instead of
-// published, and menuDidClose: publishes it. Freezing the tag map for the whole
-// interaction keeps the menu the user is looking at paired with its callbacks:
-// a click can only reach the item it was tagged with.
+// attached, and menuDidClose: publishes it: the menu the user is interacting
+// with keeps its own NSMenu for the whole interaction. Click dispatch does not
+// depend on that deferral, because a click is resolved through the NSMenuItem
+// AppKit sends (see menuItemClicked:).
 func (t *darwinTray) SetMenu(menu *Menu) error {
 	if t.statusItem.IsNil() {
 		return errors.New("darwin: tray not created")
 	}
 
-	if menu == nil {
-		// Remove the menu. When no menu is set, the button action (trayClicked:)
-		// fires on click.
-		t.menuMu.Lock()
-		if t.menuOpen {
-			// Keep the open menu dispatchable until it closes.
-			t.pendingActions, t.pendingItems, t.pendingMenu = nil, nil, 0
-			t.hasPending = true
-			t.menuMu.Unlock()
-			return nil
-		}
-		t.menuActions = make(map[uint32]func())
-		t.nsItems = make(map[uint32]darwin.ID)
-		t.nsMenu = 0
-		t.menuMu.Unlock()
-
-		t.statusItem.SendPtr(darwinSels.setMenu, 0)
-		return nil
+	// Build the tree before publishing it, so an in-flight click can never
+	// observe a half-built build.
+	build, err := t.buildMenuTree(menu)
+	if err != nil {
+		return err
 	}
-
-	// Build the NSMenu hierarchy before publishing it, so an in-flight click can
-	// never observe a half-built tag map.
-	actions := make(map[uint32]func())
-	nsItems := make(map[uint32]darwin.ID)
-	nsMenu := t.buildNSMenu("", menu, actions, nsItems)
-	if nsMenu.IsNil() {
-		return errors.New("darwin: failed to build NSMenu")
-	}
-	// menuWillOpen:/menuDidClose: are delivered to the target.
-	nsMenu.SendPtr(darwinSels.setDelegate, t.target.Ptr())
 
 	t.menuMu.Lock()
 	if t.menuOpen {
-		t.pendingActions, t.pendingItems, t.pendingMenu = actions, nsItems, nsMenu
-		t.hasPending = true
+		// Publishing now would replace the menu the user is interacting with.
+		// Keep it queued; the newest rebuild wins.
+		t.pending = build
 		t.menuMu.Unlock()
 		return nil
 	}
-	t.menuActions, t.nsItems, t.nsMenu = actions, nsItems, nsMenu
-	t.hasPending = false
+	t.adoptBuildLocked(build)
 	t.menuMu.Unlock()
 
-	// [statusItem setMenu:nsMenu]
-	t.statusItem.SendPtr(darwinSels.setMenu, nsMenu.Ptr())
+	t.attachMenu(build)
 
 	return nil
 }
 
-// menuWillOpen records that a menu is on screen. Any rebuild queued by SetMenu
-// becomes the menu being displayed, so its items dispatch from now on.
-func (t *darwinTray) menuWillOpen() {
+// buildMenuTree builds the native menu tree for menu. A nil (or empty) menu
+// builds a tree that carries no NSMenu: publishing it detaches the menu.
+func (t *darwinTray) buildMenuTree(menu *Menu) (*menuBuild, error) {
+	build := newMenuBuild()
+	if menu == nil || len(menu.Items) == 0 {
+		return build, nil
+	}
+
+	nsMenu := t.buildNSMenu("", menu, build)
+	if nsMenu.IsNil() {
+		return nil, errors.New("darwin: failed to build NSMenu")
+	}
+	build.menu = nsMenu
+
+	// menuWillOpen:/menuDidClose: are delivered to the target.
+	nsMenu.SendPtr(darwinSels.setDelegate, t.target.Ptr())
+
+	return build, nil
+}
+
+// adoptBuildLocked makes build the newest published menu, keeping just enough
+// history for clicks that AppKit has not delivered yet. Caller must hold
+// menuMu.
+func (t *darwinTray) adoptBuildLocked(build *menuBuild) {
+	t.builds = append(t.builds, nil)
+	copy(t.builds[1:], t.builds[:len(t.builds)-1])
+	t.builds[0] = build
+	if len(t.builds) > menuBuildRetention {
+		t.builds = t.builds[:menuBuildRetention]
+	}
+}
+
+// currentBuildLocked returns the newest published build, or nil when no menu
+// was ever set. Caller must hold menuMu.
+func (t *darwinTray) currentBuildLocked() *menuBuild {
+	if len(t.builds) == 0 {
+		return nil
+	}
+	return t.builds[0]
+}
+
+// currentMenu returns the NSMenu attached to the status item, or 0 when the
+// current build carries no menu.
+func (t *darwinTray) currentMenu() darwin.ID {
 	t.menuMu.Lock()
 	defer t.menuMu.Unlock()
 
-	t.menuOpen = true
-	if !t.hasPending {
-		return
+	build := t.currentBuildLocked()
+	if build == nil {
+		return 0
 	}
-	t.menuActions, t.nsItems, t.nsMenu = t.pendingActions, t.pendingItems, t.pendingMenu
-	t.pendingActions, t.pendingItems, t.pendingMenu = nil, nil, 0
-	t.hasPending = false
+	return build.menu
 }
 
-// menuDidClose publishes a rebuild that was queued while the menu was open.
-// The NSMenu and its tag map always move together, so clicks stay paired with
-// the menu they were tagged in.
-func (t *darwinTray) menuDidClose() {
-	t.menuMu.Lock()
-	t.menuOpen = false
-	if !t.hasPending {
-		t.menuMu.Unlock()
+// attachMenu makes build the menu the status item shows. Caller must not hold
+// menuMu: this calls into AppKit.
+func (t *darwinTray) attachMenu(build *menuBuild) {
+	if t.statusItem.IsNil() || build == nil {
 		return
 	}
-	actions, items, nsMenu := t.pendingActions, t.pendingItems, t.pendingMenu
-	t.pendingActions, t.pendingItems, t.pendingMenu = nil, nil, 0
-	t.hasPending = false
-	t.menuActions, t.nsItems, t.nsMenu = actions, items, nsMenu
-	t.menuMu.Unlock()
-
-	if t.statusItem.IsNil() {
-		return
-	}
-	if nsMenu.IsNil() {
-		// A queued SetMenu(nil): detach the menu.
+	if build.menu.IsNil() {
+		// [statusItem setMenu:nil] — no menu, clicks fall through to the button.
 		t.statusItem.SendPtr(darwinSels.setMenu, 0)
 		return
 	}
-	t.statusItem.SendPtr(darwinSels.setMenu, nsMenu.Ptr())
+	// [statusItem setMenu:nsMenu]
+	t.statusItem.SendPtr(darwinSels.setMenu, build.menu.Ptr())
 }
 
-// buildNSMenu recursively converts a Menu into an NSMenu.
+// callbackForMenu returns the callback tagged on menuH for tag, resolved in the
+// build that owns the NSMenu. It returns nil when no retained build owns the
+// menu or the tag.
+func (t *darwinTray) callbackForMenu(menuH uintptr, tag uint32) func() {
+	t.menuMu.Lock()
+	defer t.menuMu.Unlock()
+
+	for _, build := range t.builds {
+		if _, ok := build.menus[menuH]; !ok {
+			continue
+		}
+		return build.actions[tag]
+	}
+
+	return nil
+}
+
+// menuWillOpen records that a menu is on screen, so a rebuild arriving from
+// another goroutine is queued instead of replacing the menu under the pointer.
+//
+// A pending build at this point means menuDidClose: was not delivered for the
+// previous menu. It is applied now, otherwise a missed callback would freeze
+// the menu for the rest of the process. Clicks keep working either way, because
+// they resolve against the build that owns the clicked item.
+func (t *darwinTray) menuWillOpen() {
+	t.menuMu.Lock()
+	t.menuOpen = true
+	stuck := t.pending
+	t.pending = nil
+	if stuck != nil {
+		t.adoptBuildLocked(stuck)
+	}
+	t.menuMu.Unlock()
+
+	if stuck != nil {
+		t.attachMenu(stuck)
+	}
+}
+
+// menuDidClose publishes a rebuild that was queued while the menu was open.
+//
+// AppKit sends menuDidClose: before the clicked item's action, so a build
+// published here is newer than the menu the click came from. That is harmless:
+// menuItemClicked: resolves the click in the build that owns the NSMenuItem,
+// and the replaced build stays registered for exactly that action.
+func (t *darwinTray) menuDidClose() {
+	t.menuMu.Lock()
+	t.menuOpen = false
+	next := t.pending
+	t.pending = nil
+	if next != nil {
+		t.adoptBuildLocked(next)
+	}
+	t.menuMu.Unlock()
+
+	if next != nil {
+		t.attachMenu(next)
+	}
+}
+
+// buildNSMenu recursively converts a Menu into an NSMenu, filling in the build
+// that describes it.
 // Each actionable item is tagged with its stable MenuItem.ID() for callback
-// routing, so tags are never reused for a different item across rebuilds. The
-// tag map is filled in place and published only once the tree is complete.
-func (t *darwinTray) buildNSMenu(title string, menu *Menu, actions map[uint32]func(), nsItems map[uint32]darwin.ID) darwin.ID {
+// routing, so tags are never reused for a different item across rebuilds. Every
+// NSMenu handle of the tree is recorded in the build, which is what lets
+// menuItemClicked: resolve the click against the menu the item belongs to.
+func (t *darwinTray) buildNSMenu(title string, menu *Menu, build *menuBuild) darwin.ID {
 	initDarwinSels()
 	initDarwinClasses()
 
@@ -641,6 +732,8 @@ func (t *darwinTray) buildNSMenu(title string, menu *Menu, actions map[uint32]fu
 	if nsMenu.IsNil() {
 		return 0
 	}
+
+	build.menus[nsMenu.Ptr()] = struct{}{}
 
 	menuClickedSel := darwin.RegisterSelector("menuItemClicked:")
 
@@ -665,7 +758,7 @@ func (t *darwinTray) buildNSMenu(title string, menu *Menu, actions map[uint32]fu
 			}
 
 			// Build the submenu recursively.
-			subMenu := t.buildNSMenu(snapshot.label, item.Submenu, actions, nsItems)
+			subMenu := t.buildNSMenu(snapshot.label, item.Submenu, build)
 			if !subMenu.IsNil() {
 				nsItem.SendPtr(darwinSels.setSubmenu, subMenu.Ptr())
 			}
@@ -675,8 +768,8 @@ func (t *darwinTray) buildNSMenu(title string, menu *Menu, actions map[uint32]fu
 			// Store the submenu container handle for dynamic updates.
 			// Submenu containers are NSMenuItems like any other — users can
 			// call SetLabel/SetDisabled on the *MenuItem returned by
-			// AddSubmenu, so it must be resolvable via nsItems.
-			nsItems[snapshot.id] = nsItem
+			// AddSubmenu, so it must be resolvable via build.items.
+			build.items[snapshot.id] = nsItem
 
 		default:
 			// Normal or checkbox item.
@@ -717,9 +810,9 @@ func (t *darwinTray) buildNSMenu(title string, menu *Menu, actions map[uint32]fu
 			// UpdateItem lookup. itemWithTag: only searches the root menu, so
 			// items inside submenus must be resolved via this map.
 			if item.OnClick != nil {
-				actions[snapshot.id] = item.OnClick
+				build.actions[snapshot.id] = item.OnClick
 			}
-			nsItems[snapshot.id] = nsItem
+			build.items[snapshot.id] = nsItem
 
 			nsMenu.SendPtr(darwinSels.addItem, nsItem.Ptr())
 		}
@@ -736,14 +829,15 @@ func (t *darwinTray) UpdateItem(item *MenuItem) error {
 }
 
 func (t *darwinTray) updateItem(item menuItemSnapshot) error {
-	if t.nsMenu.IsNil() || t.target.IsNil() {
+	if t.target.IsNil() {
 		return nil
 	}
 
-	t.menuMu.Lock()
-	_, ok := t.nsItems[item.id]
-	t.menuMu.Unlock()
-	if !ok {
+	// The item can belong to the menu on screen and to a menu queued behind an
+	// open popup at the same time. Both are updated: the queued menu is not on
+	// screen yet, and applying the change to it now keeps it from being
+	// published with the state it was built from.
+	if !t.tracksItem(item.id) {
 		return nil
 	}
 
@@ -756,6 +850,45 @@ func (t *darwinTray) updateItem(item menuItemSnapshot) error {
 		uintptr(drainSel), 0, 1) // waitUntilDone:YES
 
 	return nil
+}
+
+// tracksItem reports whether id belongs to the menu on screen or to a menu
+// queued behind it. Items of older builds are gone from the UI and are left
+// untouched.
+func (t *darwinTray) tracksItem(id uint32) bool {
+	t.menuMu.Lock()
+	defer t.menuMu.Unlock()
+
+	for _, build := range []*menuBuild{t.currentBuildLocked(), t.pending} {
+		if build == nil {
+			continue
+		}
+		if _, ok := build.items[id]; ok {
+			return true
+		}
+	}
+
+	return false
+}
+
+// itemHandles returns the NSMenuItem handles of the item in the menu on screen
+// and in the menu queued behind it. Both are updated in place, so publishing a
+// queued menu cannot undo an update that arrived while it was queued.
+func (t *darwinTray) itemHandles(id uint32) []darwin.ID {
+	t.menuMu.Lock()
+	defer t.menuMu.Unlock()
+
+	handles := make([]darwin.ID, 0, 2)
+	for _, build := range []*menuBuild{t.currentBuildLocked(), t.pending} {
+		if build == nil {
+			continue
+		}
+		if nsItem, ok := build.items[id]; ok && !nsItem.IsNil() {
+			handles = append(handles, nsItem)
+		}
+	}
+
+	return handles
 }
 
 // applyPendingUpdates drains the pendingUpdates channel and applies AppKit
@@ -776,33 +909,36 @@ func (t *darwinTray) applyPendingUpdates() {
 	}
 }
 
-// applyItemUpdate applies a single snapshot to its NSMenuItem.
+// applyItemUpdate applies a single snapshot to the item's NSMenuItem in the
+// menu on screen and, if a rebuild is queued behind it, to that one as well.
 // MUST be called on the main thread.
 func (t *darwinTray) applyItemUpdate(item menuItemSnapshot) {
-	t.menuMu.Lock()
-	nsItem, ok := t.nsItems[item.id]
-	t.menuMu.Unlock()
-	if !ok || nsItem.IsNil() {
+	handles := t.itemHandles(item.id)
+	if len(handles) == 0 {
 		return
 	}
 
 	nsTitle := darwin.NewNSString(item.label)
-	if !nsTitle.IsNil() {
-		nsItem.SendPtr(darwinSels.setTitle, nsTitle.Ptr())
-	}
-
-	if item.itemType == MenuItemCheckbox {
-		state := int64(0)
-		if item.checked {
-			state = 1
-		}
-		nsItem.SendInt(darwinSels.setState, state)
-	}
-
-	nsItem.SendBool(darwinSels.setEnabled, !item.disabled)
-
+	var nsImage darwin.ID
 	if len(item.icon) > 0 {
-		nsImage := createNSImage(item.icon, false)
+		nsImage = createNSImage(item.icon, false)
+	}
+
+	for _, nsItem := range handles {
+		if !nsTitle.IsNil() {
+			nsItem.SendPtr(darwinSels.setTitle, nsTitle.Ptr())
+		}
+
+		if item.itemType == MenuItemCheckbox {
+			state := int64(0)
+			if item.checked {
+				state = 1
+			}
+			nsItem.SendInt(darwinSels.setState, state)
+		}
+
+		nsItem.SendBool(darwinSels.setEnabled, !item.disabled)
+
 		if !nsImage.IsNil() {
 			nsItem.SendPtr(darwinSels.setImage, nsImage.Ptr())
 		}
@@ -875,8 +1011,8 @@ func (t *darwinTray) Show() error {
 	}
 
 	// Restore menu if we had one.
-	if !t.nsMenu.IsNil() {
-		t.statusItem.SendPtr(darwinSels.setMenu, t.nsMenu.Ptr())
+	if nsMenu := t.currentMenu(); !nsMenu.IsNil() {
+		t.statusItem.SendPtr(darwinSels.setMenu, nsMenu.Ptr())
 	}
 
 	// Restore target/action for click handling.
@@ -997,6 +1133,22 @@ func (t *darwinTray) destroyOnMainThread() {
 		trayRegistryMu.Unlock()
 	}
 
+	// Detach the menu delegate before the target is released: NSMenu.delegate is
+	// an unretained reference, and a menu that outlives the target would call
+	// back into a freed object.
+	t.menuMu.Lock()
+	builds := t.builds
+	t.builds = nil
+	t.pending = nil
+	t.menuOpen = false
+	t.menuMu.Unlock()
+	for _, build := range builds {
+		if build.menu.IsNil() {
+			continue
+		}
+		build.menu.SendPtr(darwinSels.setDelegate, 0)
+	}
+
 	// Release ObjC objects.
 	if !t.target.IsNil() {
 		t.target.Send(darwinSels.release)
@@ -1005,7 +1157,6 @@ func (t *darwinTray) destroyOnMainThread() {
 
 	t.statusItem = 0
 	t.btn = 0
-	t.nsMenu = 0
 
 	// Stop the shared application and wake its event loop with a real event.
 	// [NSApp run] only re-checks the stop flag after processing an event; a
