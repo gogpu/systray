@@ -95,6 +95,73 @@ func TestMenu_AddCheckbox(t *testing.T) {
 	}
 }
 
+func TestMenu_CheckboxToggle(t *testing.T) {
+	t.Parallel()
+
+	var seen, onclickState, updatedState bool
+	updater := &mockUpdater{onUpdate: func(mi *MenuItem) { updatedState = mi.IsChecked() }}
+
+	menu := NewMenu()
+	SetMenuUpdater(menu, updater)
+	item := &MenuItem{}
+
+	// simulateClick mirrors what each platform does on a menu click:
+	// activate() first, then the user's OnClick callback if present.
+	simulateClick := func(item *MenuItem) {
+		item.activate()
+		if item.OnClick != nil {
+			item.OnClick()
+		}
+		updater.UpdateItem(item)
+	}
+
+	t.Run("WithOnClick", func(t *testing.T) {
+		item = menu.AddCheckbox("check", false, func() { onclickState = item.IsChecked() })
+		simulateClick(item) // toggle true
+		if !updatedState {
+			t.Errorf("checked = %v, want %v", updatedState, true)
+		}
+		simulateClick(item) // taggle false
+		if updatedState {
+			t.Errorf("checked = %v, want %v", updatedState, false)
+		}
+		item.SetChecked(true)
+		if !item.IsChecked() {
+			t.Errorf("checked = %v, want %v", item.Checked, true)
+		}
+	})
+
+	t.Run("WithOutOnClick", func(t *testing.T) {
+		item = menu.AddCheckbox("check", false, nil)
+		simulateClick(item) // toggle trucheckede
+		if !updatedState {
+			t.Errorf("checked = %v, want %v", updatedState, true)
+		}
+		simulateClick(item) // taggle false
+		if updatedState {
+			t.Errorf("checked = %v, want %v", updatedState, false)
+		}
+		item.SetChecked(true)
+		if !item.IsChecked() {
+			t.Errorf("checked = %v, want %v", item.Checked, true)
+		}
+	})
+
+	t.Run("NormalItem", func(t *testing.T) {
+		item = menu.Add("Normal", func() { onclickState = item.IsChecked(); seen = true })
+		simulateClick(item)
+		if updatedState {
+			t.Errorf("checked = %v, want %v", updatedState, false)
+		}
+		if onclickState {
+			t.Errorf("checked = %v, want %v", onclickState, false)
+		}
+		if !seen {
+			t.Errorf("seen %v, wanted %v", seen, true)
+		}
+	})
+}
+
 func TestMenu_AddSeparator(t *testing.T) {
 	t.Parallel()
 

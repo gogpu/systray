@@ -470,8 +470,7 @@ func (t *linuxTray) ShowNotification(title, message string) error {
 	}
 
 	obj := t.conn.Object(notifInterface, notifPath)
-	call := obj.Call(
-		notifInterface+".Notify", 0,
+	call := obj.Call(notifInterface+".Notify", 0,
 		t.appName,                 // app_name
 		uint32(0),                 // replaces_id
 		"",                        // app_icon (empty — no icon)
@@ -818,12 +817,9 @@ func (m *dbusMenuService) Event(id int32, eventID string, data dbus.Variant, tim
 		return nil
 	}
 
+	item.activate() // toggle checkmarks
 	if item.OnClick != nil {
 		item.OnClick()
-	}
-
-	if item.Type == MenuItemCheckbox {
-		item.SetChecked(!item.IsChecked())
 	}
 
 	return nil
