@@ -1,15 +1,23 @@
-# systray — GoGPU Ecosystem
+# systray
 
-> Pure Go system tray library for Windows, macOS, and Linux. Zero CGO.
-> v0.2.0: multi-tray support, dynamic menu updates (SetLabel/SetChecked/SetDisabled/SetIcon).
+> Go library for system tray icons on Windows, macOS and Linux. It shows a tray icon with a tooltip, a context menu (nested submenus, checkboxes, separators, item icons) whose items can be updated while it runs, click, right-click and double-click callbacks (double-click is not delivered on macOS yet), and OS notifications. Several independent trays per process are supported, and `Run()` pumps the platform event loop. Zero CGO, so no C compiler is needed and cross-compilation just works: Windows uses `Shell_NotifyIconW` through `golang.org/x/sys/windows`, macOS uses `NSStatusItem` through the goffi FFI, Linux uses StatusNotifierItem over D-Bus through godbus. Requires Go 1.25+. Standalone, with no dependency on the rest of GoGPU. Pre-v1.0: the API may still change between minor releases.
 
 ## Docs
 
-- [API Reference](https://pkg.go.dev/github.com/gogpu/systray)
-- [AGENTS.md](https://github.com/gogpu/systray/blob/main/AGENTS.md): AI agent instructions
-- [CHANGELOG](https://github.com/gogpu/systray/blob/main/CHANGELOG.md): Release history
+- [API reference](https://pkg.go.dev/github.com/gogpu/systray)
+- [README](https://github.com/gogpu/systray/blob/main/README.md): features, platform support, quick start, icon guidelines
+- [AGENTS.md](https://github.com/gogpu/systray/blob/main/AGENTS.md): instructions for AI agents using the library
+- [CHANGELOG](https://github.com/gogpu/systray/blob/main/CHANGELOG.md): release history
+- [CONTRIBUTING](https://github.com/gogpu/systray/blob/main/CONTRIBUTING.md): build, test and per-platform checks
+
+## Examples
+
+- [basic](https://github.com/gogpu/systray/tree/main/examples/basic): icon, tooltip, menu with a checkbox and a submenu
+- [dynamic-submenu](https://github.com/gogpu/systray/tree/main/examples/dynamic-submenu): live updates of submenu items and labels
+- [multi-tray](https://github.com/gogpu/systray/tree/main/examples/multi-tray): two independent tray icons in one process
+- [notification](https://github.com/gogpu/systray/tree/main/examples/notification): OS notifications from the tray
 
 ## Ecosystem
 
-- [GoGPU Ecosystem](https://github.com/gogpu/gogpu/blob/main/AGENTS.md): Full ecosystem map
-- [Open Collective](https://opencollective.com/gogpu)
+- [GoGPU ecosystem](https://gogpu.dev/llms.txt): map of all modules
+- [Open Collective](https://opencollective.com/gogpu): support development
