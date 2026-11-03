@@ -106,7 +106,7 @@ func TestClickAfterPublishResolvesClickedMenu(t *testing.T) {
 
 	// AppKit order: the menu closes (which publishes the rebuild), then the
 	// chosen item's action is delivered.
-	tray.menuDidClose()
+	tray.menuDidClose(displayed.menu)
 
 	if got := tray.currentMenu(); got.Ptr() != queued.menu.Ptr() {
 		t.Fatalf("queued menu not published: %#x", got.Ptr())
@@ -246,5 +246,173 @@ func TestMenuBuildRetention(t *testing.T) {
 	tray.menuMu.Unlock()
 	if n != menuBuildRetention {
 		t.Fatalf("retained builds = %d, want %d", n, menuBuildRetention)
+	}
+}
+
+// TestStageBuild_QueuesWhileMenuOpen covers the "publish or queue" decision
+// without a status item: a rebuild that arrives while a menu is on screen is
+// queued, and the menu is published when it closes.
+func TestStageBuild_QueuesWhileMenuOpen(t *testing.T) {
+	tray := newTestDarwinTray(t)
+
+	first := NewMenu()
+	first.Add("First", nil)
+	opened, err := tray.buildMenuTree(first)
+	if err != nil {
+		t.Fatalf("build menu: %v", err)
+	}
+
+	tray.menuMu.Lock()
+	tray.menuOpen = true
+	attach := tray.stageBuildLocked(opened)
+	pending := tray.pending
+	builds := len(tray.builds)
+	tray.menuMu.Unlock()
+
+	if attach {
+		t.Error("build attached while a menu was on screen")
+	}
+	if pending != opened {
+		t.Error("build not queued behind the open menu")
+	}
+	if builds != 0 {
+		t.Errorf("published %d builds while a menu was on screen", builds)
+	}
+
+	// The newest rebuild wins.
+	second := NewMenu()
+	second.Add("Second", nil)
+	next, err := tray.buildMenuTree(second)
+	if err != nil {
+		t.Fatalf("build second menu: %v", err)
+	}
+	tray.menuMu.Lock()
+	tray.stageBuildLocked(next)
+	queued := tray.pending
+	tray.menuMu.Unlock()
+	if queued != next {
+		t.Error("superseded rebuild is still queued")
+	}
+
+	// Closing the menu publishes it.
+	tray.menuDidClose(opened.menu)
+	if got := tray.currentMenu(); got.Ptr() != next.menu.Ptr() {
+		t.Fatalf("queued build was not published: %#x", got.Ptr())
+	}
+
+	// With nothing on screen a rebuild is published and attached at once.
+	third := NewMenu()
+	third.Add("Third", nil)
+	latest, err := tray.buildMenuTree(third)
+	if err != nil {
+		t.Fatalf("build third menu: %v", err)
+	}
+	tray.menuMu.Lock()
+	attach = tray.stageBuildLocked(latest)
+	current := tray.currentBuildLocked()
+	tray.menuMu.Unlock()
+
+	if !attach {
+		t.Error("build not attached while no menu was on screen")
+	}
+	if current != latest {
+		t.Error("build not published while no menu was on screen")
+	}
+}
+
+// TestClickSurvivesRebuildsDuringFadeout covers the window between
+// menuDidClose: and the clicked item's action: a menu tree rebuilt during the
+// fade-out must not evict the menu the click came from.
+func TestClickSurvivesRebuildsDuringFadeout(t *testing.T) {
+	tray := newTestDarwinTray(t)
+
+	var fired []string
+	menuA := NewMenu()
+	vanishing := menuA.Add("View Logs", func() { fired = append(fired, "view logs") })
+
+	displayed, err := tray.buildMenuTree(menuA)
+	if err != nil {
+		t.Fatalf("build menu A: %v", err)
+	}
+	tray.menuMu.Lock()
+	tray.adoptBuildLocked(displayed)
+	tray.menuOpen = true
+	tray.menuMu.Unlock()
+
+	rebuild := NewMenu()
+	rebuild.Add("Kept", nil)
+	queued, err := tray.buildMenuTree(rebuild)
+	if err != nil {
+		t.Fatalf("build rebuild: %v", err)
+	}
+	tray.menuMu.Lock()
+	tray.pending = queued
+	tray.menuMu.Unlock()
+
+	// AppKit closes the menu, which publishes the rebuild; the action of the
+	// clicked item has not been delivered yet.
+	tray.menuDidClose(displayed.menu)
+
+	// Several more rebuilds land during the fade-out.
+	for i := 0; i < 3; i++ {
+		menu := NewMenu()
+		menu.Add("During fade", nil)
+		build, err := tray.buildMenuTree(menu)
+		if err != nil {
+			t.Fatalf("build during fade: %v", err)
+		}
+		tray.menuMu.Lock()
+		attach := tray.stageBuildLocked(build)
+		tray.menuMu.Unlock()
+		if !attach {
+			t.Fatal("rebuild queued although no menu was on screen")
+		}
+	}
+
+	// The action arrives for the menu that was on screen.
+	click(t, tray, displayed.items[vanishing.ID()])
+	if len(fired) != 1 || fired[0] != "view logs" {
+		t.Fatalf("fired %v, want [view logs]", fired)
+	}
+
+	// The next open trims the history back to the normal retention.
+	tray.menuWillOpen()
+	tray.menuMu.Lock()
+	retained := len(tray.builds)
+	tray.menuMu.Unlock()
+	if retained != menuBuildRetention {
+		t.Errorf("retained %d builds after an open, want %d", retained, menuBuildRetention)
+	}
+}
+
+// TestUpdateItem_OutsideTrackedMenus_IsNoop covers the early returns of
+// UpdateItem: a tray without a click target, and an item that belongs to no
+// tracked menu. Both must return before the main-thread hop.
+func TestUpdateItem_OutsideTrackedMenus_IsNoop(t *testing.T) {
+	if err := (&darwinTray{}).UpdateItem(NewMenu().Add("Stray", nil)); err != nil {
+		t.Fatalf("UpdateItem without a target: %v", err)
+	}
+
+	tray := newTestDarwinTray(t)
+
+	menu := NewMenu()
+	shown := menu.Add("Shown", nil)
+	build, err := tray.buildMenuTree(menu)
+	if err != nil {
+		t.Fatalf("build menu: %v", err)
+	}
+	tray.menuMu.Lock()
+	tray.adoptBuildLocked(build)
+	tray.menuMu.Unlock()
+
+	// A tracked item would go through the main-thread hop, which needs a
+	// running event loop; that path is covered by applyItemUpdate above.
+	if !tray.tracksItem(shown.ID()) {
+		t.Error("item of the current menu is not tracked")
+	}
+
+	stray := NewMenu().Add("Stray", nil)
+	if err := tray.UpdateItem(stray); err != nil {
+		t.Fatalf("UpdateItem for an untracked item: %v", err)
 	}
 }

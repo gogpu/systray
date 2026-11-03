@@ -548,7 +548,7 @@ func TestUpdateItem_IgnoresItemsOutsideCurrentMenu(t *testing.T) {
 	hmenu := tray.hmenu
 	defer destroyMenu(hmenu)
 
-	// An item that is not part of the current menu must not be updated on it.
+	// An item of the current menu is updated in place.
 	other.Label = "Renamed"
 	if err := tray.UpdateItem(other); err != nil {
 		t.Fatalf("UpdateItem: %v", err)
@@ -556,7 +556,13 @@ func TestUpdateItem_IgnoresItemsOutsideCurrentMenu(t *testing.T) {
 	if got, _ := getMenuItemInfo(t, hmenu, uintptr(other.ID()), false); got != "Renamed" {
 		t.Errorf("current menu label = %q, want %q", got, "Renamed")
 	}
-	// The item dropped from the menu has no native entry in the current menu.
+
+	// An item that only belonged to the replaced menu has no native entry in
+	// the current one, so updating it must be a no-op there.
+	shown.Label = "Renamed too"
+	if err := tray.UpdateItem(shown); err != nil {
+		t.Fatalf("UpdateItem for dropped item: %v", err)
+	}
 	if _, ok := tray.menuState.owners[shown.ID()]; ok {
 		t.Error("dropped item is still registered against the current menu")
 	}
@@ -821,4 +827,130 @@ func TestPopup_WindowDestroyedDuringPopup_FreesMenus(t *testing.T) {
 	if isMenu(t, displayedHMenu) {
 		t.Errorf("popup menu %#x outlived WM_DESTROY and the popup", displayedHMenu)
 	}
+}
+
+// TestSetMenu_LargeCommandID covers item IDs above 0xFFFF. The 16-bit limit
+// applies to the identifier WM_COMMAND carries in LOWORD(wParam), not to the
+// menu identifier itself: AppendMenuW takes a UINT_PTR and
+// TrackPopupMenu(TPM_RETURNCMD) returns the identifier, and this code never
+// relies on WM_COMMAND.
+func TestSetMenu_LargeCommandID(t *testing.T) {
+	tray := newTestWin32Tray()
+
+	// Advance the global item counter past the 16-bit range without building a
+	// huge menu.
+	for i := 0; i < 0x10000; i++ {
+		newMenuItemID()
+	}
+
+	item := NewMenu().Add("Large", func() {})
+	if item.ID() <= 0xFFFF {
+		t.Fatalf("item ID = %#x, want > 0xFFFF", item.ID())
+	}
+
+	menu := NewMenu()
+	menu.Items = append(menu.Items, item)
+	if err := tray.SetMenu(menu); err != nil {
+		t.Fatalf("SetMenu: %v", err)
+	}
+	hmenu := tray.hmenu
+	defer destroyMenu(hmenu)
+
+	// The native menu stored the full identifier.
+	if got, _ := getMenuItemInfo(t, hmenu, uintptr(item.ID()), false); got != "Large" {
+		t.Errorf("label = %q, want %q", got, "Large")
+	}
+
+	// And the click resolves through it.
+	displayed := openPopupState(tray)
+	if got := tray.endPopup(item.ID(), displayed); got != item {
+		t.Errorf("click resolved to %v, want %v", got, item)
+	}
+}
+
+// TestSetMenu_AfterDestroy_IsNoop covers a SetMenu that arrives after the
+// message window is gone: the menu it builds can never be displayed, and the
+// destroy path will not run again to free it.
+func TestSetMenu_AfterDestroy_IsNoop(t *testing.T) {
+	tray := newTestWin32Tray()
+
+	initial := NewMenu()
+	initial.Items = append(initial.Items, NewMenu().Add("Before", nil))
+	if err := tray.SetMenu(initial); err != nil {
+		t.Fatalf("SetMenu: %v", err)
+	}
+	before := tray.hmenu
+
+	// What WM_DESTROY leaves behind.
+	tray.menuMu.Lock()
+	tray.destroyed = true
+	tray.hmenu, tray.menuState = 0, nil
+	tray.menuMu.Unlock()
+	destroyMenu(before)
+
+	late := NewMenu()
+	late.Items = append(late.Items, NewMenu().Add("Late", nil))
+	if err := tray.SetMenu(late); err != nil {
+		t.Fatalf("SetMenu after destroy: %v", err)
+	}
+
+	tray.menuMu.Lock()
+	hmenu, state := tray.hmenu, tray.menuState
+	tray.menuMu.Unlock()
+	if hmenu != 0 || state != nil {
+		t.Errorf("menu published after destroy: hmenu=%#x state=%v", hmenu, state)
+	}
+}
+
+// TestPopup_DeferredMenusFreedWhenNothingQueued covers the re-entrant publish
+// path, the only way retireHMenuLocked defers a handle: with nothing queued
+// behind the popup, the deferred handles must still be released.
+func TestPopup_DeferredMenusFreedWhenNothingQueued(t *testing.T) {
+	tray := newTestWin32Tray()
+
+	first := NewMenu().Add("First", nil)
+	menuA := NewMenu()
+	menuA.Items = append(menuA.Items, first)
+	if err := tray.SetMenu(menuA); err != nil {
+		t.Fatalf("SetMenu A: %v", err)
+	}
+
+	displayed := openPopupState(tray)
+	displayedHMenu := displayed.hmenu
+
+	// A re-entrant showContextMenu publishes a replacement while the popup is
+	// still tracked, so the tracked menu has to outlive it.
+	second := NewMenu().Add("Second", nil)
+	menuB := NewMenu()
+	menuB.Items = append(menuB.Items, second)
+	if err := tray.SetMenu(menuB); err != nil {
+		t.Fatalf("SetMenu B: %v", err)
+	}
+
+	tray.menuMu.Lock()
+	pendingMenu, pendingHMenu := tray.pendingMenu, tray.pendingHMenu
+	tray.pendingMenu, tray.pendingHMenu, tray.hasPending = nil, 0, false
+	tray.publishMenuLocked(pendingMenu, pendingHMenu)
+	deferred := len(tray.pendingDestroy)
+	tray.menuMu.Unlock()
+
+	if deferred == 0 {
+		t.Fatal("tracked menu was not deferred")
+	}
+
+	// The popup returns with nothing queued: the deferred menu is no longer
+	// reachable and must be freed, while the re-entrant publish stays current.
+	tray.endPopup(0, displayed)
+
+	tray.menuMu.Lock()
+	current := tray.hmenu
+	tray.menuMu.Unlock()
+
+	if current != pendingHMenu {
+		t.Fatalf("current menu = %#x, want the re-entrant publish %#x", current, pendingHMenu)
+	}
+	if isMenu(t, displayedHMenu) {
+		t.Errorf("deferred popup menu %#x was not freed", displayedHMenu)
+	}
+	destroyMenu(current)
 }

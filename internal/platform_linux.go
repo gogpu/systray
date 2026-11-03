@@ -418,16 +418,30 @@ func (t *linuxTray) SetMenu(menu *Menu) error {
 // given tree and assigns each item its stable dbusmenu ID on first sight.
 // Caller must hold t.mu.
 func (t *linuxTray) registerMenuItems(items []*MenuItem) {
+	t.registerMenuItemsSeen(items, make(map[uint32]struct{}))
+}
+
+// registerMenuItemsSeen assigns the IDs for one tree. dbusmenu requires the IDs
+// in a layout to be unique, so an item that appears more than once in the same
+// tree gets an extra ID for each further occurrence; the first one stays the
+// ID that UpdateItem targets. Caller must hold t.mu.
+func (t *linuxTray) registerMenuItemsSeen(items []*MenuItem, seen map[uint32]struct{}) {
 	for _, item := range items {
-		id, ok := t.itemIDs[item.ID()]
+		itemID := item.ID()
+		id, ok := t.itemIDs[itemID]
 		if !ok {
 			id = t.nextMenuID
 			t.nextMenuID++
-			t.itemIDs[item.ID()] = id
+			t.itemIDs[itemID] = id
 		}
+		if _, duplicate := seen[itemID]; duplicate {
+			id = t.nextMenuID
+			t.nextMenuID++
+		}
+		seen[itemID] = struct{}{}
 		t.menuItems[id] = item
 		if item.Type == MenuItemSubmenu && item.Submenu != nil {
-			t.registerMenuItems(item.Submenu.Items)
+			t.registerMenuItemsSeen(item.Submenu.Items, seen)
 		}
 	}
 }

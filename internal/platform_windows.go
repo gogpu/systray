@@ -519,6 +519,14 @@ func (t *win32Tray) SetMenu(menu *Menu) error {
 	}
 
 	t.menuMu.Lock()
+	if t.destroyed {
+		// WM_DESTROY already ran, so nothing here can ever be displayed or
+		// freed: the destroy path has cleared the menu state and will not run
+		// again. Drop what was built instead of leaking it.
+		t.menuMu.Unlock()
+		destroyMenu(newHMenu)
+		return nil
+	}
 	if t.popupOpen || t.hasPending {
 		// A popup is being tracked: publishing this menu now would renumber the
 		// command IDs of the menu on screen. Queue it instead.
@@ -622,7 +630,17 @@ func (t *win32Tray) finalizePopupLocked() {
 	}
 
 	if !queued {
-		// Nothing was queued: keep whatever the popup displayed.
+		// Nothing was queued: keep whatever the popup displayed. Menus that only
+		// the popup kept alive are still released here — they cannot be reached
+		// any more now that TrackPopupMenu has returned.
+		for _, h := range deferred {
+			if h != 0 && h != popupHMenu && h != t.hmenu {
+				destroyMenu(h)
+			}
+		}
+		if popupHMenu != 0 && popupHMenu != t.hmenu {
+			destroyMenu(popupHMenu)
+		}
 		return
 	}
 

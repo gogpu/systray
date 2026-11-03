@@ -122,3 +122,44 @@ func TestLinuxMenuEventStaleIDDoesNotAlias(t *testing.T) {
 		t.Fatalf("current ID dispatched %v, want [alpha]", fired)
 	}
 }
+
+// TestLinuxDuplicateItemsGetUniqueIDs covers the same *MenuItem appearing more
+// than once in one tree: dbusmenu requires the IDs in a layout to be unique,
+// and every occurrence must still dispatch to that item.
+func TestLinuxDuplicateItemsGetUniqueIDs(t *testing.T) {
+	tray := newTestLinuxTray()
+
+	var fired []string
+	shared := NewMenu().Add("Shared", func() { fired = append(fired, "shared") })
+
+	menu := NewMenu()
+	menu.Items = append(menu.Items, shared, shared, shared)
+	if err := tray.SetMenu(menu); err != nil {
+		t.Fatalf("SetMenu: %v", err)
+	}
+
+	tray.mu.RLock()
+	ids := make(map[int32]struct{})
+	for id, item := range tray.menuItems {
+		if item != shared {
+			t.Errorf("ID %d maps to %v, want the shared item", id, item)
+		}
+		ids[id] = struct{}{}
+	}
+	tray.mu.RUnlock()
+
+	if len(ids) != 3 {
+		t.Fatalf("distinct dbus IDs = %d, want 3 (one per occurrence)", len(ids))
+	}
+
+	// Every occurrence dispatches to the item.
+	svc := &dbusMenuService{tray: tray}
+	for id := range ids {
+		if err := svc.Event(id, "clicked", dbus.Variant{}, 0); err != nil {
+			t.Fatalf("Event(%d): %v", id, err)
+		}
+	}
+	if len(fired) != 3 {
+		t.Fatalf("fired %v, want 3 dispatches", fired)
+	}
+}

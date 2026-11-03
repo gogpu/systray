@@ -229,11 +229,17 @@ type menuBuild struct {
 	actions map[uint32]func()    // item.ID() -> callback
 	items   map[uint32]darwin.ID // item.ID() -> NSMenuItem handle (incl. submenus)
 	menus   map[uintptr]struct{} // every NSMenu handle of this build, root and submenus
+
+	// awaitingClick marks the build that was on screen when the menu closed.
+	// AppKit delivers menuDidClose: before the clicked item's action, so this
+	// build can still receive a click after it was replaced and must not be
+	// dropped by a rebuild that lands before that action.
+	awaitingClick bool
 }
 
-// menuBuildRetention is how many built menus stay registered for click
-// resolution: the menu on screen and the one that was on screen when it was
-// replaced, whose action AppKit may deliver after it closed.
+// menuBuildRetention is how many built menus normally stay registered for click
+// resolution: the menu on screen and the one it replaced. A build that is
+// awaiting its click is kept on top of that until the next menu opens.
 const menuBuildRetention = 2
 
 func newMenuBuild() *menuBuild {
@@ -424,7 +430,7 @@ func registerGoSystrayTarget() (darwin.Class, error) {
 			t := trayRegistryMap[self]
 			trayRegistryMu.RUnlock()
 			if t != nil {
-				t.menuDidClose()
+				t.menuDidClose(darwin.ID(sender))
 			}
 			return 0
 		})
@@ -563,19 +569,29 @@ func (t *darwinTray) SetMenu(menu *Menu) error {
 	}
 
 	t.menuMu.Lock()
+	attach := t.stageBuildLocked(build)
+	t.menuMu.Unlock()
+
+	if attach {
+		t.attachMenu(build)
+	}
+
+	return nil
+}
+
+// stageBuildLocked decides what happens to a freshly built menu: it is
+// published when nothing is on screen, or queued behind the menu the user is
+// interacting with. It reports whether the caller has to attach it to the
+// status item. Caller must hold menuMu.
+func (t *darwinTray) stageBuildLocked(build *menuBuild) (attach bool) {
 	if t.menuOpen {
 		// Publishing now would replace the menu the user is interacting with.
 		// Keep it queued; the newest rebuild wins.
 		t.pending = build
-		t.menuMu.Unlock()
-		return nil
+		return false
 	}
 	t.adoptBuildLocked(build)
-	t.menuMu.Unlock()
-
-	t.attachMenu(build)
-
-	return nil
+	return true
 }
 
 // buildMenuTree builds the native menu tree for menu. A nil (or empty) menu
@@ -599,15 +615,23 @@ func (t *darwinTray) buildMenuTree(menu *Menu) (*menuBuild, error) {
 }
 
 // adoptBuildLocked makes build the newest published menu, keeping just enough
-// history for clicks that AppKit has not delivered yet. Caller must hold
-// menuMu.
+// history for clicks that AppKit has not delivered yet. A build that is
+// awaiting its click is kept beyond the normal retention: with a rebuild every
+// few hundred milliseconds, several menus can be published during the fade-out
+// that precedes the action, and dropping the closed menu would drop the click.
+// Caller must hold menuMu.
 func (t *darwinTray) adoptBuildLocked(build *menuBuild) {
-	t.builds = append(t.builds, nil)
-	copy(t.builds[1:], t.builds[:len(t.builds)-1])
-	t.builds[0] = build
-	if len(t.builds) > menuBuildRetention {
-		t.builds = t.builds[:menuBuildRetention]
+	kept := make([]*menuBuild, 0, menuBuildRetention+1)
+	kept = append(kept, build)
+	for _, old := range t.builds {
+		if old == build {
+			continue
+		}
+		if old.awaitingClick || len(kept) < menuBuildRetention {
+			kept = append(kept, old)
+		}
 	}
+	t.builds = kept
 }
 
 // currentBuildLocked returns the newest published build, or nil when no menu
@@ -654,11 +678,21 @@ func (t *darwinTray) callbackForMenu(menuH uintptr, tag uint32) func() {
 	t.menuMu.Lock()
 	defer t.menuMu.Unlock()
 
+	build := t.buildForMenuLocked(menuH)
+	if build == nil {
+		return nil
+	}
+
+	return build.actions[tag]
+}
+
+// buildForMenuLocked returns the retained build that owns menuH, or nil.
+// Caller must hold menuMu.
+func (t *darwinTray) buildForMenuLocked(menuH uintptr) *menuBuild {
 	for _, build := range t.builds {
-		if _, ok := build.menus[menuH]; !ok {
-			continue
+		if _, ok := build.menus[menuH]; ok {
+			return build
 		}
-		return build.actions[tag]
 	}
 
 	return nil
@@ -674,6 +708,14 @@ func (t *darwinTray) callbackForMenu(menuH uintptr, tag uint32) func() {
 func (t *darwinTray) menuWillOpen() {
 	t.menuMu.Lock()
 	t.menuOpen = true
+	// A new menu is opening, so the action of the previous menu has been
+	// delivered: the builds kept for it can be trimmed back.
+	for _, build := range t.builds {
+		build.awaitingClick = false
+	}
+	if len(t.builds) > menuBuildRetention {
+		t.builds = t.builds[:menuBuildRetention]
+	}
 	stuck := t.pending
 	t.pending = nil
 	if stuck != nil {
@@ -692,12 +734,23 @@ func (t *darwinTray) menuWillOpen() {
 // published here is newer than the menu the click came from. That is harmless:
 // menuItemClicked: resolves the click in the build that owns the NSMenuItem,
 // and the replaced build stays registered for exactly that action.
-func (t *darwinTray) menuDidClose() {
+func (t *darwinTray) menuDidClose(menu darwin.ID) {
 	t.menuMu.Lock()
 	t.menuOpen = false
 	next := t.pending
 	t.pending = nil
 	if next != nil {
+		// The menu that was on screen can still receive the clicked item's
+		// action, so keep it reachable past this publish. The delegate's sender
+		// identifies it; the current build is the fallback when it is not one of
+		// the retained ones.
+		onScreen := t.buildForMenuLocked(menu.Ptr())
+		if onScreen == nil {
+			onScreen = t.currentBuildLocked()
+		}
+		if onScreen != nil {
+			onScreen.awaitingClick = true
+		}
 		t.adoptBuildLocked(next)
 	}
 	t.menuMu.Unlock()
