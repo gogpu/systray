@@ -1021,8 +1021,11 @@ func (t *win32Tray) showContextMenu() {
 
 	// Dispatch via globally unique command ID → MenuItem map.
 	if ret > 0 {
-		if item, ok := t.cmdItems[uint32(ret)]; ok && item.OnClick != nil {
-			item.OnClick()
+		if item, ok := t.cmdItems[uint32(ret)]; ok {
+			item.activate()
+			if item.OnClick != nil {
+				item.OnClick()
+			}
 		}
 	}
 }
