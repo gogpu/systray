@@ -30,7 +30,7 @@ const (
 	nifState    = 0x00000008
 	nifInfo     = 0x00000010
 	nifRealtime = 0x00000040
-	nifShovel   = 0x00000080
+	nifShowTip  = 0x00000080
 )
 
 // NOTIFYICONDATA.dwInfoFlags constants for balloon notification icons.
@@ -156,9 +156,12 @@ type menuItemInfoW struct {
 	hbmpChecked   uintptr
 	hbmpUnchecked uintptr
 	dwItemData    uintptr
-	dwTypeData    uintptr
-	cch           uint32
-	hbmpItem      uintptr
+	// dwTypeData is a typed pointer, not a uintptr: C reads it through the
+	// struct, outside the //go:uintptrescapes argument list, so only a Go
+	// pointer keeps the UTF-16 string alive during the call.
+	dwTypeData *uint16
+	cch        uint32
+	hbmpItem   uintptr
 }
 
 // msg is the Win32 MSG structure for the message loop.
@@ -531,7 +534,6 @@ func (t *win32Tray) Show() error {
 	}
 
 	nid := t.makeNID()
-	nid.uFlags = nifMessage | nifIcon | nifTip
 
 	ret, _, _ := procShellNotifyIconW.Call(nimAdd, uintptr(unsafe.Pointer(&nid)))
 	if ret == 0 {
@@ -658,6 +660,7 @@ func (t *win32Tray) makeNID() notifyIconData {
 		cbSize:           uint32(unsafe.Sizeof(notifyIconData{})),
 		hWnd:             t.hwnd,
 		uID:              t.uid,
+		uFlags:           nifMessage | nifIcon | nifTip | nifShowTip,
 		uCallbackMessage: uint32(wmTrayCallback),
 		hIcon:            t.hicon,
 	}
@@ -680,7 +683,6 @@ func (t *win32Tray) makeNID() notifyIconData {
 // modifyIcon sends NIM_MODIFY to update the icon/tooltip in the tray.
 func (t *win32Tray) modifyIcon() error {
 	nid := t.makeNID()
-	nid.uFlags = nifMessage | nifIcon | nifTip
 
 	ret, _, _ := procShellNotifyIconW.Call(nimModify, uintptr(unsafe.Pointer(&nid)))
 	if ret == 0 {
@@ -869,7 +871,7 @@ func (t *win32Tray) updateItem(item menuItemSnapshot) error {
 		cbSize:     uint32(unsafe.Sizeof(menuItemInfoW{})),
 		fMask:      miimString | miimState,
 		fState:     fState,
-		dwTypeData: uintptr(unsafe.Pointer(label)),
+		dwTypeData: label,
 	}
 
 	fByPosition := uintptr(0)

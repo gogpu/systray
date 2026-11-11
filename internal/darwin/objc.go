@@ -11,6 +11,7 @@ package darwin
 
 import (
 	"errors"
+	"runtime"
 	"sync"
 	"unsafe"
 
@@ -543,6 +544,12 @@ func AllocateClassPair(superclass Class, name string) Class {
 		return 0
 	}
 
+	// The goffi argument slot is a uintptr, which the GC and the stack copier
+	// do not see: pin the name for the call.
+	var pinner runtime.Pinner
+	pinner.Pin(&nameBytes[0])
+	defer pinner.Unpin()
+
 	super := uintptr(superclass)
 	namePtr := uintptr(unsafe.Pointer(&nameBytes[0]))
 	var extraBytes uintptr
@@ -584,6 +591,11 @@ func ClassAddMethod(cls Class, sel SEL, imp uintptr, typeEncoding string) bool {
 	); err != nil {
 		return false
 	}
+
+	// Pinned for the call: the goffi argument slot is a uintptr.
+	var pinner runtime.Pinner
+	pinner.Pin(&typeBytes[0])
+	defer pinner.Unpin()
 
 	clsPtr := uintptr(cls)
 	selPtr := uintptr(sel)
@@ -651,7 +663,12 @@ func NewNSString(s string) ID {
 		return 0
 	}
 
+	// SendPtr carries the address as a plain uintptr through msgSend, so the
+	// bytes are pinned until initWithUTF8String: has copied them.
 	cstr := append([]byte(s), 0)
+	var pinner runtime.Pinner
+	pinner.Pin(&cstr[0])
+	defer pinner.Unpin()
 	nsstr = nsstr.SendPtr(selInitWithUTF8String, uintptr(unsafe.Pointer(&cstr[0])))
 
 	return nsstr
@@ -674,6 +691,12 @@ func NewNSData(data []byte) ID {
 	}
 
 	selDataWithBytes := RegisterSelector("dataWithBytes:length:")
+
+	// dataWithBytes:length: copies the bytes; pinned until it returns, since
+	// MsgSendPtrPtr passes the address as a uintptr.
+	var pinner runtime.Pinner
+	pinner.Pin(&data[0])
+	defer pinner.Unpin()
 
 	return MsgSendPtrPtr(ID(nsDataClass), selDataWithBytes,
 		uintptr(unsafe.Pointer(&data[0])),
