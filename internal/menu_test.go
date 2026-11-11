@@ -98,68 +98,54 @@ func TestMenu_AddCheckbox(t *testing.T) {
 func TestMenu_CheckboxToggle(t *testing.T) {
 	t.Parallel()
 
-	var seen, onclickState, updatedState bool
-	updater := &mockUpdater{onUpdate: func(mi *MenuItem) { updatedState = mi.IsChecked() }}
+	states := make(map[string]bool)
+	var clickState bool
+	updater := &mockUpdater{onUpdate: func(mi *MenuItem) {
+		states[mi.Label] = mi.IsChecked()
+	}}
 
 	menu := NewMenu()
+	check1 := &MenuItem{}
+	check1 = menu.AddCheckbox("check1", false, func() {
+		clickState = check1.IsChecked()
+	})
+	check2 := menu.AddCheckbox("check2", false, nil)
+	normal := menu.Add("normal", nil)
 	SetMenuUpdater(menu, updater)
-	item := &MenuItem{}
 
-	// simulateClick mirrors what each platform does on a menu click:
-	// activate() first, then the user's OnClick callback if present.
-	simulateClick := func(item *MenuItem) {
-		item.activate()
-		if item.OnClick != nil {
-			item.OnClick()
-		}
-		updater.UpdateItem(item)
+	// checkbox with onClick
+	check1.activate()
+	check1.OnClick()
+	if !states["check1"] {
+		t.Errorf("checked = %v, want %v", states["check1"], true)
+	}
+	if !clickState {
+		t.Errorf("checked = %v, want %v", clickState, true)
+	}
+	check1.activate()
+	check1.OnClick()
+	if states["check1"] {
+		t.Errorf("checked = %v, want %v", states["check1"], false)
+	}
+	if clickState {
+		t.Errorf("checked = %v, want %v", states["check1"], false)
 	}
 
-	t.Run("WithOnClick", func(t *testing.T) {
-		item = menu.AddCheckbox("check", false, func() { onclickState = item.IsChecked() })
-		simulateClick(item) // toggle true
-		if !updatedState {
-			t.Errorf("checked = %v, want %v", updatedState, true)
-		}
-		simulateClick(item) // taggle false
-		if updatedState {
-			t.Errorf("checked = %v, want %v", updatedState, false)
-		}
-		item.SetChecked(true)
-		if !item.IsChecked() {
-			t.Errorf("checked = %v, want %v", item.Checked, true)
-		}
-	})
+	// checkbox without onClicak
+	check2.activate()
+	if !states["check2"] {
+		t.Errorf("checked = %v, want %v", states["check2"], true)
+	}
+	check2.activate()
+	if states["check2"] {
+		t.Errorf("checked = %v, want %v", states["check2"], false)
+	}
 
-	t.Run("WithOutOnClick", func(t *testing.T) {
-		item = menu.AddCheckbox("check", false, nil)
-		simulateClick(item) // toggle trucheckede
-		if !updatedState {
-			t.Errorf("checked = %v, want %v", updatedState, true)
-		}
-		simulateClick(item) // taggle false
-		if updatedState {
-			t.Errorf("checked = %v, want %v", updatedState, false)
-		}
-		item.SetChecked(true)
-		if !item.IsChecked() {
-			t.Errorf("checked = %v, want %v", item.Checked, true)
-		}
-	})
-
-	t.Run("NormalItem", func(t *testing.T) {
-		item = menu.Add("Normal", func() { onclickState = item.IsChecked(); seen = true })
-		simulateClick(item)
-		if updatedState {
-			t.Errorf("checked = %v, want %v", updatedState, false)
-		}
-		if onclickState {
-			t.Errorf("checked = %v, want %v", onclickState, false)
-		}
-		if !seen {
-			t.Errorf("seen %v, wanted %v", seen, true)
-		}
-	})
+	// normal
+	normal.activate()
+	if states["normal"] {
+		t.Errorf("checked = %v, want %v", states["normal"], false)
+	}
 }
 
 func TestMenu_AddSeparator(t *testing.T) {

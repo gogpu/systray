@@ -608,10 +608,9 @@ func (t *darwinTray) buildNSMenu(title string, menu *Menu, counter *int) darwin.
 			// UpdateItem lookup. itemWithTag: only searches the root menu, so
 			// items inside submenus must be resolved via this map.
 			t.menuMu.Lock()
-			t.menuActions[idx] = item.activate
-			if item.OnClick != nil {
-				t.menuActions[idx] = func() {
-					item.activate()
+			t.menuActions[idx] = func() {
+				item.activate()
+				if item.OnClick != nil {
 					item.OnClick()
 				}
 			}

@@ -189,7 +189,7 @@ func (m *Menu) Add(label string, onClick func()) *MenuItem {
 }
 
 // AddCheckbox appends a checkbox menu item and returns it for dynamic updates.
-// state will toggle before onClick executes.
+// Clicking the item toggles its checked state before onClick runs, so onClick sees the new state.
 func (m *Menu) AddCheckbox(label string, checked bool, onClick func()) *MenuItem {
 	item := &MenuItem{
 		id:      newMenuItemID(),
