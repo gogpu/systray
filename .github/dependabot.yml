@@ -4,6 +4,7 @@ updates:
   # comment; Dependabot moves the SHA and the comment together.
   - package-ecosystem: github-actions
     directory: /
+    labels: ["type: dependencies"]
     schedule:
       interval: weekly
     groups:
@@ -16,6 +17,7 @@ updates:
   # what is behind.
   - package-ecosystem: gomod
     directory: /tools
+    labels: ["type: dependencies"]
     schedule:
       interval: weekly
     groups:
