@@ -817,6 +817,7 @@ func (m *dbusMenuService) Event(id int32, eventID string, data dbus.Variant, tim
 		return nil
 	}
 
+	item.activate() // toggle checkmarks
 	if item.OnClick != nil {
 		item.OnClick()
 	}

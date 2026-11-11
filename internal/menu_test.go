@@ -95,6 +95,59 @@ func TestMenu_AddCheckbox(t *testing.T) {
 	}
 }
 
+func TestMenu_CheckboxToggle(t *testing.T) {
+	t.Parallel()
+
+	states := make(map[string]bool)
+	var clickState bool
+	updater := &mockUpdater{onUpdate: func(mi *MenuItem) {
+		states[mi.Label] = mi.IsChecked()
+	}}
+
+	menu := NewMenu()
+	check1 := &MenuItem{}
+	check1 = menu.AddCheckbox("check1", false, func() {
+		clickState = check1.IsChecked()
+	})
+	check2 := menu.AddCheckbox("check2", false, nil)
+	normal := menu.Add("normal", nil)
+	SetMenuUpdater(menu, updater)
+
+	// checkbox with onClick
+	check1.activate()
+	check1.OnClick()
+	if !states["check1"] {
+		t.Errorf("checked = %v, want %v", states["check1"], true)
+	}
+	if !clickState {
+		t.Errorf("checked = %v, want %v", clickState, true)
+	}
+	check1.activate()
+	check1.OnClick()
+	if states["check1"] {
+		t.Errorf("checked = %v, want %v", states["check1"], false)
+	}
+	if clickState {
+		t.Errorf("checked = %v, want %v", states["check1"], false)
+	}
+
+	// checkbox without onClicak
+	check2.activate()
+	if !states["check2"] {
+		t.Errorf("checked = %v, want %v", states["check2"], true)
+	}
+	check2.activate()
+	if states["check2"] {
+		t.Errorf("checked = %v, want %v", states["check2"], false)
+	}
+
+	// normal
+	normal.activate()
+	if states["normal"] {
+		t.Errorf("checked = %v, want %v", states["normal"], false)
+	}
+}
+
 func TestMenu_AddSeparator(t *testing.T) {
 	t.Parallel()
 

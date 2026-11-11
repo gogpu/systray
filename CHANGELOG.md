@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Checkbox items toggle on click** Clicking a checkbox item now flips its checked state before OnClick runs, on all platforms. Apps that toggle the item themselves in OnClick should drop that call, or the two toggles cancel out.
 ### Fixed
 
 - **Go memory handed to native code as `uintptr` is now kept alive and in place.** A `uintptr` holding a Go address is invisible to the GC and the stack copier; only a conversion written directly in a `syscall` / `x/sys/windows` `Call` argument list is protected. Windows: `MENUITEMINFOW.dwTypeData` (read by `SetMenuItemInfoW` through the struct) is now a typed pointer, so the menu label can no longer be collected during the call. macOS: the class name and method type encoding (`objc_allocateClassPair`, `class_addMethod`), the `NSString` UTF-8 bytes and the `NSData` source bytes are pinned with `runtime.Pinner` for the call, since goffi argument slots and the `msgSend` wrapper carry them as plain `uintptr`. A source-level guard test (`TestFFIPointersArePinned`) fails on any new unpinned case.

@@ -76,6 +76,19 @@ func (item *MenuItem) snapshot() menuItemSnapshot {
 	return snapshot
 }
 
+func (item *MenuItem) activate() {
+	if item.Type != MenuItemCheckbox {
+		return
+	}
+	item.mu.Lock()
+	item.Checked = !item.Checked
+	u, snapshot := item.updateLocked()
+	item.mu.Unlock()
+	if u != nil {
+		_ = u.updateItem(snapshot)
+	}
+}
+
 // IsChecked returns the current checked state. Thread-safe.
 func (item *MenuItem) IsChecked() bool {
 	item.mu.Lock()
@@ -176,6 +189,7 @@ func (m *Menu) Add(label string, onClick func()) *MenuItem {
 }
 
 // AddCheckbox appends a checkbox menu item and returns it for dynamic updates.
+// Clicking the item toggles its checked state before onClick runs, so onClick sees the new state.
 func (m *Menu) AddCheckbox(label string, checked bool, onClick func()) *MenuItem {
 	item := &MenuItem{
 		id:      newMenuItemID(),
