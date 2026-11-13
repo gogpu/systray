@@ -198,6 +198,7 @@ type darwinTray struct {
 	nsItems        map[uint32]darwin.ID // item.ID() -> NSMenuItem handle (incl. submenus)
 	menuMu         sync.Mutex
 	pendingUpdates chan menuItemSnapshot // buffered channel for main-thread dispatch
+	pendingOps     *opsQueue             // main-thread dispatch for tray-level setters
 }
 
 // goSystrayTargetClass is the custom ObjC class registered once for click handling.
@@ -223,6 +224,7 @@ func NewPlatformTray(callbacks *Callbacks) PlatformTray {
 		menuActions:    make(map[int]func()),
 		nsItems:        make(map[uint32]darwin.ID),
 		pendingUpdates: make(chan menuItemSnapshot, 64),
+		pendingOps:     newOpsQueue(),
 	}
 }
 
@@ -389,15 +391,22 @@ func (t *darwinTray) SetIcon(png []byte) error {
 
 	t.iconData = png
 
-	nsImage := createNSImage(png, false)
-	if nsImage.IsNil() {
-		return errors.New("darwin: failed to create NSImage from PNG data")
-	}
+	var ret error
+	t.runOnMain(func() {
+		if t.btn.IsNil() {
+			return // destroyed between the check and the drain
+		}
+		nsImage := createNSImage(png, false)
+		if nsImage.IsNil() {
+			ret = errors.New("darwin: failed to create NSImage from PNG data")
+			return
+		}
 
-	// [button setImage:nsImage]
-	t.btn.SendPtr(darwinSels.setImage, nsImage.Ptr())
+		// [button setImage:nsImage]
+		t.btn.SendPtr(darwinSels.setImage, nsImage.Ptr())
+	})
 
-	return nil
+	return ret
 }
 
 // SetTemplateIcon sets a macOS template image. Template images are monochrome
@@ -410,15 +419,22 @@ func (t *darwinTray) SetTemplateIcon(png []byte) error {
 
 	t.iconData = png
 
-	nsImage := createNSImage(png, true)
-	if nsImage.IsNil() {
-		return errors.New("darwin: failed to create template NSImage")
-	}
+	var ret error
+	t.runOnMain(func() {
+		if t.btn.IsNil() {
+			return // destroyed between the check and the drain
+		}
+		nsImage := createNSImage(png, true)
+		if nsImage.IsNil() {
+			ret = errors.New("darwin: failed to create template NSImage")
+			return
+		}
 
-	// [button setImage:nsImage]
-	t.btn.SendPtr(darwinSels.setImage, nsImage.Ptr())
+		// [button setImage:nsImage]
+		t.btn.SendPtr(darwinSels.setImage, nsImage.Ptr())
+	})
 
-	return nil
+	return ret
 }
 
 // createNSImage creates an NSImage from PNG data, optionally marking it as
@@ -460,15 +476,22 @@ func (t *darwinTray) SetTooltip(text string) error {
 		return errors.New("darwin: tray not created")
 	}
 
-	nsStr := darwin.NewNSString(text)
-	if nsStr.IsNil() {
-		return errors.New("darwin: failed to create NSString for tooltip")
-	}
+	var ret error
+	t.runOnMain(func() {
+		if t.btn.IsNil() {
+			return // destroyed between the check and the drain
+		}
+		nsStr := darwin.NewNSString(text)
+		if nsStr.IsNil() {
+			ret = errors.New("darwin: failed to create NSString for tooltip")
+			return
+		}
 
-	// [button setToolTip:nsString]
-	t.btn.SendPtr(darwinSels.setToolTip, nsStr.Ptr())
+		// [button setToolTip:nsString]
+		t.btn.SendPtr(darwinSels.setToolTip, nsStr.Ptr())
+	})
 
-	return nil
+	return ret
 }
 
 // SetMenu builds an NSMenu from our Menu struct and attaches it to the status item.
@@ -477,33 +500,41 @@ func (t *darwinTray) SetMenu(menu *Menu) error {
 		return errors.New("darwin: tray not created")
 	}
 
-	if menu == nil {
-		// Remove the menu. When no menu is set, the button action (trayClicked:)
-		// fires on click.
-		t.statusItem.SendPtr(darwinSels.setMenu, 0)
-		t.nsMenu = 0
-		return nil
-	}
+	var ret error
+	t.runOnMain(func() {
+		if t.statusItem.IsNil() {
+			return // destroyed between the check and the drain
+		}
 
-	// Build the NSMenu hierarchy.
-	t.menuMu.Lock()
-	// Clear old actions and item handle mappings.
-	t.menuActions = make(map[int]func())
-	t.nsItems = make(map[uint32]darwin.ID)
-	t.menuMu.Unlock()
+		if menu == nil {
+			// Remove the menu. When no menu is set, the button action
+			// (trayClicked:) fires on click.
+			t.statusItem.SendPtr(darwinSels.setMenu, 0)
+			t.nsMenu = 0
+			return
+		}
 
-	counter := menuItemCallbackBaseID
-	nsMenu := t.buildNSMenu("", menu, &counter)
-	if nsMenu.IsNil() {
-		return errors.New("darwin: failed to build NSMenu")
-	}
+		// Build the NSMenu hierarchy.
+		t.menuMu.Lock()
+		// Clear old actions and item handle mappings.
+		t.menuActions = make(map[int]func())
+		t.nsItems = make(map[uint32]darwin.ID)
+		t.menuMu.Unlock()
 
-	t.nsMenu = nsMenu
+		counter := menuItemCallbackBaseID
+		nsMenu := t.buildNSMenu("", menu, &counter)
+		if nsMenu.IsNil() {
+			ret = errors.New("darwin: failed to build NSMenu")
+			return
+		}
 
-	// [statusItem setMenu:nsMenu]
-	t.statusItem.SendPtr(darwinSels.setMenu, nsMenu.Ptr())
+		t.nsMenu = nsMenu
 
-	return nil
+		// [statusItem setMenu:nsMenu]
+		t.statusItem.SendPtr(darwinSels.setMenu, nsMenu.Ptr())
+	})
+
+	return ret
 }
 
 // buildNSMenu recursively converts a Menu into an NSMenu.
@@ -651,11 +682,36 @@ func (t *darwinTray) updateItem(item menuItemSnapshot) error {
 	return nil
 }
 
-// applyPendingUpdates drains the pendingUpdates channel and applies AppKit
-// changes. MUST be called on the main thread (via drainUpdates: ObjC callback).
-// A snapshot with a zero ID signals Destroy.
+// runOnMain dispatches op to the main thread through the same drainUpdates:
+// mechanism item updates use. waitUntilDone:YES applies the op before
+// runOnMain returns, so callers can report errors captured inside op, and a
+// call made on the main thread itself runs inline. If the tray has no target
+// yet, or anymore after Destroy, the op is dropped, matching updateItem's
+// behavior when the menu does not exist.
+func (t *darwinTray) runOnMain(op func()) {
+	if t.target.IsNil() {
+		return
+	}
+
+	if !t.pendingOps.push(op) {
+		return
+	}
+
+	drainSel := darwin.RegisterSelector("drainUpdates:")
+	darwin.MsgSend3Ptr(t.target, darwinSels.performSelectorOnMainThread,
+		uintptr(drainSel), 0, 1) // waitUntilDone:YES
+}
+
+// applyPendingUpdates drains the pendingUpdates channel and the pendingOps
+// queue, and applies AppKit changes. MUST be called on the main thread (via
+// the drainUpdates: ObjC callback). A snapshot with a zero ID signals Destroy.
+// Both queues are drained completely each pass: every updateItem and runOnMain
+// call dispatches this drain with waitUntilDone:YES, so a queued call is always
+// applied before its caller returns and the two queues cannot reorder across
+// passes.
 func (t *darwinTray) applyPendingUpdates() {
 	for {
+		t.pendingOps.drain()
 		select {
 		case item := <-t.pendingUpdates:
 			if item.id == 0 {
@@ -873,6 +929,10 @@ func (t *darwinTray) Destroy() {
 // destroyOnMainThread performs the actual AppKit cleanup.
 // MUST be called on the main thread.
 func (t *darwinTray) destroyOnMainThread() {
+	// Ops queued after this point, and any still in flight, are dropped so
+	// nothing touches the released status item.
+	t.pendingOps.close()
+
 	// Remove the status item from the menu bar.
 	if !t.statusBar.IsNil() && !t.statusItem.IsNil() {
 		t.statusBar.SendPtr(darwinSels.removeStatusItem, t.statusItem.Ptr())
