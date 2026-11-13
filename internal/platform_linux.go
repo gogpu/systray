@@ -70,6 +70,7 @@ type linuxTray struct {
 	menuItems map[int32]*MenuItem // dbus id -> item for Event dispatch
 	itemIDs   map[uint32]int32    // MenuItem.ID() -> dbus menu item ID
 	menuRev   uint32              // layout revision for dbusmenu
+	nextID    int32               // monotonic dbusmenu item ID, never reused
 
 	iconPixmap []dbusPixmap // cached ARGB pixmap
 	tooltip    string
@@ -86,6 +87,7 @@ func NewPlatformTray(callbacks *Callbacks) PlatformTray {
 		callbacks: callbacks,
 		menuItems: make(map[int32]*MenuItem),
 		itemIDs:   make(map[uint32]int32),
+		nextID:    1,
 		status:    sniStatusPassive,
 		quit:      make(chan struct{}),
 	}
@@ -385,7 +387,7 @@ func (t *linuxTray) SetMenu(menu *Menu) error {
 	t.menuItems = make(map[int32]*MenuItem)
 	t.itemIDs = make(map[uint32]int32)
 	if menu != nil {
-		t.buildMenuItemMap(menu.Items, 1)
+		t.nextID = t.buildMenuItemMap(menu.Items, t.nextID)
 	}
 	t.menuRev++
 	rev := t.menuRev
@@ -664,7 +666,7 @@ func (m *dbusMenuService) buildLayout(id int32, maxDepth int32, currentDepth int
 		}
 		var children []dbus.Variant
 		if maxDepth != 0 && m.tray.menu != nil {
-			children = m.buildChildren(m.tray.menu.Items, 1, maxDepth, currentDepth+1)
+			children = m.buildChildren(m.tray.menu.Items, maxDepth, currentDepth+1)
 		}
 		return menuLayout{V0: 0, V1: rootProps, V2: children}
 	}
@@ -681,7 +683,7 @@ func (m *dbusMenuService) buildLayout(id int32, maxDepth int32, currentDepth int
 		// Find the starting child ID for this submenu.
 		childStartID := m.findChildStartID(id)
 		if childStartID > 0 {
-			children = m.buildChildren(item.Submenu.Items, childStartID, maxDepth, currentDepth+1)
+			children = m.buildChildren(item.Submenu.Items, maxDepth, currentDepth+1)
 		}
 	}
 
@@ -689,23 +691,22 @@ func (m *dbusMenuService) buildLayout(id int32, maxDepth int32, currentDepth int
 }
 
 // buildChildren creates dbus.Variant entries for a list of menu items.
-func (m *dbusMenuService) buildChildren(items []*MenuItem, startID int32, maxDepth int32, currentDepth int32) []dbus.Variant {
+func (m *dbusMenuService) buildChildren(items []*MenuItem, maxDepth int32, currentDepth int32) []dbus.Variant {
 	children := make([]dbus.Variant, 0, len(items))
-	nextID := startID
 
 	for _, item := range items {
-		id := nextID
-		nextID++
+		// Use the ID assigned by buildMenuItemMap so layout, event
+		// dispatch and property updates all agree; IDs are never reused
+		// across SetMenu calls.
+		id := m.tray.itemIDs[item.ID()]
 
 		props := m.itemProperties(item.snapshot())
 		var subChildren []dbus.Variant
 
 		if item.Type == MenuItemSubmenu && item.Submenu != nil {
 			if maxDepth < 0 || currentDepth < maxDepth {
-				subChildren = m.buildChildren(item.Submenu.Items, nextID, maxDepth, currentDepth+1)
+				subChildren = m.buildChildren(item.Submenu.Items, maxDepth, currentDepth+1)
 			}
-			// Advance nextID past all submenu items.
-			nextID = m.advancePastSubmenu(item.Submenu, nextID)
 		}
 
 		child := menuLayout{V0: id, V1: props, V2: subChildren}
@@ -715,23 +716,14 @@ func (m *dbusMenuService) buildChildren(items []*MenuItem, startID int32, maxDep
 	return children
 }
 
-// advancePastSubmenu calculates the next available ID after all items in a submenu.
-func (m *dbusMenuService) advancePastSubmenu(menu *Menu, startID int32) int32 {
-	nextID := startID
-	for _, item := range menu.Items {
-		nextID++
-		if item.Type == MenuItemSubmenu && item.Submenu != nil {
-			nextID = m.advancePastSubmenu(item.Submenu, nextID)
-		}
-	}
-	return nextID
-}
-
-// findChildStartID finds the start ID of children for a submenu item.
+// findChildStartID returns the assigned dbusmenu ID of a submenu's first
+// item, or 0 when the submenu is empty.
 func (m *dbusMenuService) findChildStartID(parentID int32) int32 {
-	// The children of item with parentID start at parentID+1 in our
-	// sequential numbering scheme (same as buildMenuItemMap).
-	return parentID + 1
+	item, ok := m.tray.menuItems[parentID]
+	if !ok || item.Submenu == nil || len(item.Submenu.Items) == 0 {
+		return 0
+	}
+	return m.tray.itemIDs[item.Submenu.Items[0].ID()]
 }
 
 // itemProperties converts a MenuItem to dbusmenu properties.
@@ -744,28 +736,25 @@ func (m *dbusMenuService) itemProperties(item menuItemSnapshot) map[string]dbus.
 
 	case MenuItemCheckbox:
 		props["label"] = dbus.MakeVariant(item.label)
+		props["type"] = dbus.MakeVariant("standard")
 		props["toggle-type"] = dbus.MakeVariant("checkmark")
 		if item.checked {
 			props["toggle-state"] = dbus.MakeVariant(int32(1))
 		} else {
 			props["toggle-state"] = dbus.MakeVariant(int32(0))
 		}
-		if item.disabled {
-			props["enabled"] = dbus.MakeVariant(false)
-		}
+		props["enabled"] = dbus.MakeVariant(!item.disabled)
 
 	case MenuItemSubmenu:
 		props["label"] = dbus.MakeVariant(item.label)
+		props["type"] = dbus.MakeVariant("standard")
 		props["children-display"] = dbus.MakeVariant("submenu")
-		if item.disabled {
-			props["enabled"] = dbus.MakeVariant(false)
-		}
+		props["enabled"] = dbus.MakeVariant(!item.disabled)
 
 	default: // MenuItemNormal
 		props["label"] = dbus.MakeVariant(item.label)
-		if item.disabled {
-			props["enabled"] = dbus.MakeVariant(false)
-		}
+		props["type"] = dbus.MakeVariant("standard")
+		props["enabled"] = dbus.MakeVariant(!item.disabled)
 		if len(item.icon) > 0 {
 			props["icon-data"] = dbus.MakeVariant(item.icon)
 		}
