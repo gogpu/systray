@@ -38,7 +38,7 @@ func getMenuItemInfo(t *testing.T, hmenu uintptr, uItem uintptr, byPosition bool
 	return windows.UTF16ToString(buf), mii.fState
 }
 
-// newTestWin32Tray builds a real Win32 tray without creating the message-only
+// newTestWin32Tray builds a real Win32 tray without creating the hidden
 // window: buildHMENU/populateMenu/UpdateItem do not require an HWND.
 func newTestWin32Tray() *win32Tray {
 	return NewPlatformTray(nil).(*win32Tray)

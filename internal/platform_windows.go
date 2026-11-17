@@ -93,9 +93,6 @@ const (
 	mfsDisabled = 0x00000003
 )
 
-// HWND_MESSAGE parent for message-only windows.
-const hwndMessage = ^uintptr(2) // (HWND)-3 = HWND_MESSAGE
-
 // ChangeWindowMessageFilterEx constants (Windows 7+, UIPI).
 const (
 	msgfltAllow = 1
@@ -230,7 +227,7 @@ type notifyIconIdentifier struct {
 }
 
 // trayRegistry maps HWND to tray instance for wndProc routing.
-// Multiple tray icons each have their own message-only window.
+// Multiple tray icons each have their own hidden window.
 var (
 	trayMu       sync.RWMutex
 	trayRegistry = make(map[uintptr]*win32Tray)
@@ -249,7 +246,7 @@ var taskbarCreatedMsg uint32
 
 // win32Tray implements PlatformTray using Shell_NotifyIconW.
 type win32Tray struct {
-	hwnd     uintptr // message-only window for tray callbacks
+	hwnd     uintptr // hidden window for tray callbacks
 	uid      uint32  // icon ID passed to Shell_NotifyIconW
 	hicon    uintptr // current HICON handle
 	hmenu    uintptr // current HMENU handle for context menu
@@ -279,7 +276,7 @@ func NewPlatformTray(callbacks *Callbacks) PlatformTray {
 }
 
 // Create initializes the Win32 tray: registers the window class (once),
-// creates a message-only window, and registers the TaskbarCreated message.
+// creates a hidden window, and registers the TaskbarCreated message.
 func (t *win32Tray) Create() error {
 	classOnce.Do(func() {
 		errClassRegister = registerTrayWindowClass()
@@ -316,7 +313,7 @@ func (t *win32Tray) Create() error {
 }
 
 // registerTrayWindowClass registers the window class used by all tray
-// message-only windows. Called once via sync.Once.
+// hidden windows. Called once via sync.Once.
 func registerTrayWindowClass() error {
 	// Register TaskbarCreated for explorer crash recovery.
 	msgName, err := windows.UTF16PtrFromString("TaskbarCreated")
@@ -350,8 +347,13 @@ func registerTrayWindowClass() error {
 	return nil
 }
 
-// createMessageWindow creates an HWND_MESSAGE window for tray callbacks
+// createMessageWindow creates a hidden top-level window for tray callbacks
 // and registers the tray instance in the global registry.
+//
+// The window is a never-shown top-level window rather than a message-only
+// (HWND_MESSAGE) window because message-only windows do not receive broadcast
+// messages, such as WM_SETTINGCHANGE ("ImmersiveColorSet") for theme changes
+// and TaskbarCreated for explorer.exe restarts.
 func createMessageWindow(t *win32Tray) (uintptr, error) {
 	className, err := windows.UTF16PtrFromString("GoGPUSystrayMsg")
 	if err != nil {
@@ -366,13 +368,13 @@ func createMessageWindow(t *win32Tray) (uintptr, error) {
 		0,                                  // lpWindowName (none needed)
 		0,                                  // dwStyle
 		0, 0, 0, 0,                         // x, y, w, h
-		hwndMessage, // hWndParent = HWND_MESSAGE
-		0,           // hMenu
-		hinstance,   // hInstance
-		0,           // lpParam
+		0,         // hWndParent (top-level; dwStyle has no WS_VISIBLE)
+		0,         // hMenu
+		hinstance, // hInstance
+		0,         // lpParam
 	)
 	if hwnd == 0 {
-		return 0, fmt.Errorf("CreateWindowExW HWND_MESSAGE failed")
+		return 0, fmt.Errorf("CreateWindowExW failed for hidden tray window")
 	}
 
 	trayMu.Lock()
@@ -393,7 +395,9 @@ func (t *win32Tray) SetIcon(png []byte) error {
 	// Store PNG for explorer crash recovery and theme switching.
 	t.iconData = png
 
-	return t.applyIcon(png)
+	// Keep showing the dark mode icon if it applies, so that updating the
+	// light icon while in dark mode does not replace the visible icon.
+	return t.applyIcon(t.themeIcon())
 }
 
 // SetDarkModeIcon sets an alternative icon displayed when Windows is in dark mode.
@@ -888,7 +892,7 @@ func (t *win32Tray) updateItem(item menuItemSnapshot) error {
 
 // --- Window procedure ---
 
-// trayWndProc handles messages for tray message-only windows.
+// trayWndProc handles messages for the hidden tray windows.
 func trayWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 	// Look up the tray instance for this HWND.
 	trayMu.RLock()
