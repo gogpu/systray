@@ -39,10 +39,12 @@ func (t *SystemTray) SetIcon(png []byte) *SystemTray {
 	return t
 }
 
-// SetDarkModeIcon sets an alternative icon for dark mode (Windows).
+// SetDarkModeIcon sets an alternative icon for dark mode (Windows, macOS).
 // When set, the tray automatically switches between the light and dark icons
 // based on the system theme. On Windows, theme changes are detected via
-// WM_SETTINGCHANGE with "ImmersiveColorSet".
+// WM_SETTINGCHANGE with "ImmersiveColorSet". On macOS, the icon follows the
+// menu bar's effective appearance, which also depends on the desktop picture
+// behind the translucent menu bar; it is ignored while a template icon is set.
 func (t *SystemTray) SetDarkModeIcon(png []byte) *SystemTray {
 	_ = t.impl.SetDarkModeIcon(png)
 	return t

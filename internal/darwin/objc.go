@@ -522,6 +522,12 @@ func MsgSendPtrPtr(id ID, sel SEL, arg0, arg1 uintptr) ID {
 	return msgSend(id, sel, arg0, arg1)
 }
 
+// MsgSend4Ptr calls objc_msgSend with self, sel, and 4 pointer arguments.
+// Used for addObserver:forKeyPath:options:context:.
+func MsgSend4Ptr(id ID, sel SEL, arg0, arg1, arg2, arg3 uintptr) ID {
+	return msgSend(id, sel, arg0, arg1, arg2, arg3)
+}
+
 // AllocateClassPair creates a new ObjC class as a subclass of superclass.
 // Returns the new Class, or 0 if allocation fails.
 // Call RegisterClassPair after adding methods.
