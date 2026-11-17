@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"unsafe"
 
 	"github.com/go-webgpu/goffi/ffi"
 
@@ -33,6 +34,19 @@ var darwinSels struct {
 	alloc   darwin.SEL
 	init    darwin.SEL
 	release darwin.SEL
+	retain  darwin.SEL
+
+	// NSKeyValueObserving
+	addObserverForKeyPath    darwin.SEL // addObserver:forKeyPath:options:context:
+	removeObserverForKeyPath darwin.SEL // removeObserver:forKeyPath:
+
+	// NSView / NSAppearance
+	effectiveAppearance               darwin.SEL
+	bestMatchFromAppearancesWithNames darwin.SEL // bestMatchFromAppearancesWithNames:
+
+	// NSArray / NSString
+	arrayWithObjectsCount darwin.SEL // arrayWithObjects:count:
+	isEqualToString       darwin.SEL // isEqualToString:
 
 	// NSApplication
 	sharedApplication     darwin.SEL
@@ -101,6 +115,7 @@ var darwinClasses struct {
 	NSAutoreleasePool        darwin.Class
 	NSUserNotificationCenter darwin.Class
 	NSUserNotification       darwin.Class
+	NSArray                  darwin.Class
 }
 
 func initDarwinSels() {
@@ -109,6 +124,22 @@ func initDarwinSels() {
 		darwinSels.alloc = darwin.RegisterSelector("alloc")
 		darwinSels.init = darwin.RegisterSelector("init")
 		darwinSels.release = darwin.RegisterSelector("release")
+		darwinSels.retain = darwin.RegisterSelector("retain")
+
+		// NSKeyValueObserving
+		darwinSels.addObserverForKeyPath = darwin.RegisterSelector(
+			"addObserver:forKeyPath:options:context:")
+		darwinSels.removeObserverForKeyPath = darwin.RegisterSelector(
+			"removeObserver:forKeyPath:")
+
+		// NSView / NSAppearance
+		darwinSels.effectiveAppearance = darwin.RegisterSelector("effectiveAppearance")
+		darwinSels.bestMatchFromAppearancesWithNames = darwin.RegisterSelector(
+			"bestMatchFromAppearancesWithNames:")
+
+		// NSArray / NSString
+		darwinSels.arrayWithObjectsCount = darwin.RegisterSelector("arrayWithObjects:count:")
+		darwinSels.isEqualToString = darwin.RegisterSelector("isEqualToString:")
 
 		// NSApplication
 		darwinSels.sharedApplication = darwin.RegisterSelector("sharedApplication")
@@ -178,7 +209,78 @@ func initDarwinClasses() {
 		darwinClasses.NSAutoreleasePool = darwin.GetClass("NSAutoreleasePool")
 		darwinClasses.NSUserNotificationCenter = darwin.GetClass("NSUserNotificationCenter")
 		darwinClasses.NSUserNotification = darwin.GetClass("NSUserNotification")
+		darwinClasses.NSArray = darwin.GetClass("NSArray")
 	})
+}
+
+// appearanceObjects holds the Foundation objects used to observe and classify
+// the status bar button's effective appearance. They are created once and
+// retained for the lifetime of the process.
+var appearanceObjects struct {
+	once sync.Once
+
+	keyPath    darwin.ID // @"effectiveAppearance"
+	darkName   darwin.ID // NSAppearanceNameDarkAqua
+	candidates darwin.ID // @[NSAppearanceNameAqua, NSAppearanceNameDarkAqua]
+
+	// names backs the C array passed to arrayWithObjects:count:. It is a
+	// package-level variable so its address stays valid during the call.
+	names [2]uintptr
+}
+
+func initAppearanceObjects() {
+	appearanceObjects.once.Do(func() {
+		initDarwinSels()
+		initDarwinClasses()
+
+		// The NSAppearanceName* constants are NSStrings whose values equal
+		// their identifiers.
+		appearanceObjects.keyPath = darwin.NewNSString("effectiveAppearance")
+		lightName := darwin.NewNSString("NSAppearanceNameAqua")
+		appearanceObjects.darkName = darwin.NewNSString("NSAppearanceNameDarkAqua")
+		if lightName.IsNil() || appearanceObjects.darkName.IsNil() {
+			return
+		}
+
+		appearanceObjects.names = [2]uintptr{lightName.Ptr(), appearanceObjects.darkName.Ptr()}
+		// [NSArray arrayWithObjects:names count:2] returns an autoreleased
+		// array; retain it so it outlives any autorelease pool.
+		candidates := darwin.MsgSendPtrPtr(darwin.ID(darwinClasses.NSArray),
+			darwinSels.arrayWithObjectsCount,
+			uintptr(unsafe.Pointer(&appearanceObjects.names[0])), 2)
+		if candidates.IsNil() {
+			return
+		}
+		candidates.Send(darwinSels.retain)
+		appearanceObjects.candidates = candidates
+	})
+}
+
+// isDarkAppearance reports whether view is drawn with a dark appearance.
+//
+// For a status bar button this reflects the menu bar's actual appearance,
+// which depends not only on the system Light/Dark setting but also (since
+// macOS 11) on the desktop picture behind the translucent menu bar.
+func isDarkAppearance(view darwin.ID) bool {
+	initAppearanceObjects()
+	if view.IsNil() || appearanceObjects.candidates.IsNil() {
+		return false
+	}
+
+	// [[view effectiveAppearance] bestMatchFromAppearancesWithNames:candidates]
+	appearance := view.Send(darwinSels.effectiveAppearance)
+	if appearance.IsNil() {
+		return false
+	}
+	best := appearance.SendPtr(darwinSels.bestMatchFromAppearancesWithNames,
+		appearanceObjects.candidates.Ptr())
+	if best.IsNil() {
+		return false
+	}
+
+	// isEqualToString: returns a BOOL in the low byte of the result register;
+	// the remaining bits are unspecified.
+	return best.SendPtr(darwinSels.isEqualToString, appearanceObjects.darkName.Ptr())&0xff != 0
 }
 
 // darwinTray implements PlatformTray using NSStatusBar/NSStatusItem.
@@ -191,6 +293,16 @@ type darwinTray struct {
 
 	callbacks *Callbacks
 	iconData  []byte // stored PNG for recovery after Hide/Show
+
+	// iconMu guards iconData, iconDark and iconTemplate, which are read on
+	// the main thread when the menu bar appearance changes.
+	iconMu       sync.Mutex
+	iconDark     []byte // optional PNG used when the menu bar is dark
+	iconTemplate bool   // iconData is a template image
+
+	// observingAppearance is true while target observes the button's
+	// effectiveAppearance via KVO.
+	observingAppearance bool
 
 	// menuActions maps menu item indices to their callbacks.
 	// Populated when SetMenu builds the NSMenu hierarchy.
@@ -373,6 +485,27 @@ func registerGoSystrayTarget() (darwin.Class, error) {
 		})
 		darwin.ClassAddMethod(cls, darwin.RegisterSelector("drainUpdates:"), drainUpdatesIMP, "v@:@")
 
+		// Add observeValueForKeyPath:ofObject:change:context: — the KVO
+		// callback, fired when the status bar button's effectiveAppearance
+		// changes (e.g. light/dark switch or a new desktop picture).
+		// ObjC signature: -(void)observeValueForKeyPath:(NSString*)keyPath
+		//   ofObject:(id)object change:(NSDictionary*)change context:(void*)context
+		//   → "v@:@@@^v"
+		appearanceChangedIMP := ffi.NewCallback(func(self, sel, keyPath, object, change, context uintptr) uintptr {
+			trayRegistryMu.RLock()
+			t := trayRegistryMap[self]
+			trayRegistryMu.RUnlock()
+			if t != nil && !t.btn.IsNil() && darwin.ID(object) == t.btn {
+				if err := t.applyIcon(); err != nil {
+					slog.Warn("darwin: icon update after appearance change", "err", err)
+				}
+			}
+			return 0
+		})
+		darwin.ClassAddMethod(cls,
+			darwin.RegisterSelector("observeValueForKeyPath:ofObject:change:context:"),
+			appearanceChangedIMP, "v@:@@@^v")
+
 		darwin.RegisterClassPair(cls)
 		goSystrayTargetClass = cls
 	})
@@ -382,22 +515,19 @@ func registerGoSystrayTarget() (darwin.Class, error) {
 
 // SetIcon sets the tray icon from PNG bytes.
 // The image is resized to 22x22 points, the standard macOS menu bar icon size.
+// If a dark mode icon is also set, the tray automatically switches between
+// them based on the menu bar appearance.
 func (t *darwinTray) SetIcon(png []byte) error {
 	if t.statusItem.IsNil() || t.btn.IsNil() {
 		return errors.New("darwin: tray not created")
 	}
 
+	t.iconMu.Lock()
 	t.iconData = png
+	t.iconTemplate = false
+	t.iconMu.Unlock()
 
-	nsImage := createNSImage(png, false)
-	if nsImage.IsNil() {
-		return errors.New("darwin: failed to create NSImage from PNG data")
-	}
-
-	// [button setImage:nsImage]
-	t.btn.SendPtr(darwinSels.setImage, nsImage.Ptr())
-
-	return nil
+	return t.applyIcon()
 }
 
 // SetTemplateIcon sets a macOS template image. Template images are monochrome
@@ -408,17 +538,95 @@ func (t *darwinTray) SetTemplateIcon(png []byte) error {
 		return errors.New("darwin: tray not created")
 	}
 
+	t.iconMu.Lock()
 	t.iconData = png
+	t.iconTemplate = true
+	t.iconMu.Unlock()
 
-	nsImage := createNSImage(png, true)
+	return t.applyIcon()
+}
+
+// SetDarkModeIcon sets an alternative icon displayed when the menu bar has a
+// dark appearance, for icons that cannot be expressed as a template image
+// (e.g. colored icons). The tray switches between this icon and the one set
+// by SetIcon whenever the menu bar appearance changes.
+//
+// The menu bar appearance is observed on the status bar button itself rather
+// than derived from the system Dark Mode setting: since macOS 11 the menu bar
+// is translucent and its appearance also depends on the desktop picture.
+//
+// Template icons adapt automatically, so the dark mode icon is ignored while
+// a template icon is set. Passing nil or an empty slice disables switching.
+func (t *darwinTray) SetDarkModeIcon(png []byte) error {
+	if t.statusItem.IsNil() || t.btn.IsNil() {
+		return errors.New("darwin: tray not created")
+	}
+
+	t.iconMu.Lock()
+	t.iconDark = png
+	hasIcon := len(t.iconData) > 0
+	t.iconMu.Unlock()
+
+	t.setObservingAppearance(len(png) > 0)
+
+	if !hasIcon {
+		return nil
+	}
+	return t.applyIcon()
+}
+
+// applyIcon sets the button image to the stored icon that matches the
+// button's current effective appearance.
+func (t *darwinTray) applyIcon() error {
+	if t.btn.IsNil() {
+		return errors.New("darwin: tray not created")
+	}
+
+	t.iconMu.Lock()
+	png, dark, template := t.iconData, t.iconDark, t.iconTemplate
+	t.iconMu.Unlock()
+
+	if !template && len(dark) > 0 && isDarkAppearance(t.btn) {
+		png = dark
+	}
+
+	nsImage := createNSImage(png, template)
 	if nsImage.IsNil() {
-		return errors.New("darwin: failed to create template NSImage")
+		if template {
+			return errors.New("darwin: failed to create template NSImage")
+		}
+		return errors.New("darwin: failed to create NSImage from PNG data")
 	}
 
 	// [button setImage:nsImage]
 	t.btn.SendPtr(darwinSels.setImage, nsImage.Ptr())
 
 	return nil
+}
+
+// setObservingAppearance adds or removes target as a KVO observer of the
+// status bar button's effectiveAppearance. The observer must be removed
+// before the button is released (Hide, Destroy).
+func (t *darwinTray) setObservingAppearance(observe bool) {
+	if observe == t.observingAppearance || t.btn.IsNil() || t.target.IsNil() {
+		return
+	}
+
+	initAppearanceObjects()
+	if appearanceObjects.keyPath.IsNil() {
+		return
+	}
+
+	if observe {
+		// [btn addObserver:target forKeyPath:@"effectiveAppearance" options:0 context:NULL]
+		darwin.MsgSend4Ptr(t.btn, darwinSels.addObserverForKeyPath,
+			t.target.Ptr(), appearanceObjects.keyPath.Ptr(), 0, 0)
+	} else {
+		// [btn removeObserver:target forKeyPath:@"effectiveAppearance"]
+		darwin.MsgSendPtrPtr(t.btn, darwinSels.removeObserverForKeyPath,
+			t.target.Ptr(), appearanceObjects.keyPath.Ptr())
+	}
+	t.observingAppearance = observe
 }
 
 // createNSImage creates an NSImage from PNG data, optionally marking it as
@@ -760,9 +968,16 @@ func (t *darwinTray) Show() error {
 
 	t.btn = t.statusItem.Send(darwinSels.button)
 
-	// Restore icon if we had one.
-	if len(t.iconData) > 0 {
-		if err := t.SetIcon(t.iconData); err != nil {
+	t.iconMu.Lock()
+	hasIcon, hasDarkIcon := len(t.iconData) > 0, len(t.iconDark) > 0
+	t.iconMu.Unlock()
+
+	// Resume observing the new button's appearance if a dark icon is set.
+	t.setObservingAppearance(hasDarkIcon)
+
+	// Restore icon if we had one, preserving its template/dark variants.
+	if hasIcon {
+		if err := t.applyIcon(); err != nil {
 			slog.Warn("darwin: failed to restore icon after Show", "err", err)
 		}
 	}
@@ -788,6 +1003,9 @@ func (t *darwinTray) Hide() error {
 	if t.statusBar.IsNil() || t.statusItem.IsNil() {
 		return nil
 	}
+
+	// The button is released with the status item, so stop observing it first.
+	t.setObservingAppearance(false)
 
 	// [statusBar removeStatusItem:statusItem]
 	t.statusBar.SendPtr(darwinSels.removeStatusItem, t.statusItem.Ptr())
@@ -873,6 +1091,9 @@ func (t *darwinTray) Destroy() {
 // destroyOnMainThread performs the actual AppKit cleanup.
 // MUST be called on the main thread.
 func (t *darwinTray) destroyOnMainThread() {
+	// Stop observing the button before it and the target are released.
+	t.setObservingAppearance(false)
+
 	// Remove the status item from the menu bar.
 	if !t.statusBar.IsNil() && !t.statusItem.IsNil() {
 		t.statusBar.SendPtr(darwinSels.removeStatusItem, t.statusItem.Ptr())

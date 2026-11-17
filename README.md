@@ -30,7 +30,7 @@
 - **Multiple trays** — create as many tray icons as you need
 - **Context menus** — nested menus with checkboxes, separators, icons, and submenus
 - **Notifications** — balloon tips (Windows), notification center (macOS), D-Bus notifications (Linux)
-- **Dark mode** — automatic icon switching for light/dark themes (Windows)
+- **Dark mode** — automatic icon switching for light/dark themes (Windows) and light/dark menu bars (macOS)
 - **Template icons** — macOS-native monochrome icons that adapt to system theme
 - **Builder pattern** — fluent API for clean, readable code
 - **Message loop** — built-in `Run()` blocks and pumps the platform event loop
@@ -111,7 +111,7 @@ tray.Remove()                      // Destroy tray icon and release resources
 
 // Icon management
 tray.SetIcon(png []byte)           // Set tray icon (PNG format)
-tray.SetDarkModeIcon(png []byte)   // Auto-switch in dark mode (Windows)
+tray.SetDarkModeIcon(png []byte)   // Auto-switch in dark mode (Windows, macOS)
 tray.SetTemplateIcon(png []byte)   // macOS template image (monochrome)
 
 // Text and menu
@@ -188,6 +188,12 @@ tray.SetIcon(lightIcon).SetDarkModeIcon(darkIcon)
 tray.SetTemplateIcon(monochromeIcon)
 ```
 
+For icons that cannot be monochrome (e.g. a colored status indicator), use `SetDarkModeIcon()` as on Windows. The library observes the status item's effective appearance and switches icons when the menu bar changes between light and dark. Since macOS 11 the menu bar is translucent, so its appearance depends on the desktop picture as well as the system Light/Dark setting; the switch follows the menu bar, not just the system setting:
+
+```go
+tray.SetIcon(iconForLightMenuBar).SetDarkModeIcon(iconForDarkMenuBar)
+```
+
 **Linux** — The SNI protocol delivers the icon pixmap to the desktop environment, which handles theme adaptation. No special API is needed.
 
 ## Notifications
@@ -209,12 +215,12 @@ tray.ShowNotification("Update Available", "Version 2.0 is ready to install.")
 | Platform | Recommended Size | Format | Notes |
 |:---------|:----------------|:-------|:------|
 | **Windows** | 16x16, 32x32 | PNG | Provide both sizes for standard and HiDPI |
-| **macOS** | 22x22, 44x44 (@2x) | PNG | Must be monochrome (template) for proper theme adaptation |
+| **macOS** | 22x22, 44x44 (@2x) | PNG | Monochrome (template), or a light/dark pair via `SetDarkModeIcon()` |
 | **Linux** | 22x22, 24x24 | PNG | SNI spec recommends 22x22 |
 
 **Input format:** PNG bytes (`[]byte`). The library handles conversion to native format (HICON, NSImage, ARGB pixmap) internally.
 
-For macOS, use `SetTemplateIcon()` with a **monochrome** PNG (only alpha channel matters). The system automatically adjusts the icon color for light/dark menu bar.
+For macOS, use `SetTemplateIcon()` with a **monochrome** PNG (only alpha channel matters). The system automatically adjusts the icon color for light/dark menu bar. For colored icons, provide a light/dark pair with `SetIcon()` and `SetDarkModeIcon()`.
 
 ## Architecture
 
@@ -258,7 +264,7 @@ tray.OnClick(func() {
 | Pure Go (zero CGO) | **Yes** | No (CGO on macOS/Linux) | No (CGO on macOS/Linux) |
 | Multiple trays | **Yes** | No (single global) | No (single global) |
 | Dynamic menu updates | **Yes** (SetLabel/SetChecked/SetDisabled) | Yes (SetTitle/Check/Uncheck) | Yes (SetTitle/Check/Uncheck) |
-| Dark mode auto-switch | **Yes** (Windows) | No | No |
+| Dark mode auto-switch | **Yes** (Windows, macOS) | No | No |
 | Template icons (macOS) | **Yes** | Yes | Yes |
 | Nested menus | **Yes** | Yes | Yes |
 | Menu item icons | **Yes** | Yes | Yes |

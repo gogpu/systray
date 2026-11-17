@@ -42,7 +42,8 @@ func (t *Tray) SetIcon(png []byte) error {
 
 // SetDarkModeIcon stores the dark mode icon variant and forwards it to the
 // platform implementation. On Windows, this enables automatic icon switching
-// when the system theme changes between dark and light mode.
+// when the system theme changes between dark and light mode. On macOS, the
+// icon switches when the menu bar appearance changes between dark and light.
 func (t *Tray) SetDarkModeIcon(png []byte) error {
 	t.DarkModeIcon = png
 
