@@ -65,6 +65,7 @@ var darwinSels struct {
 
 	// NSMenu
 	initWithTitle               darwin.SEL
+	setAutoenablesItems         darwin.SEL // setAutoenablesItems:
 	addItem                     darwin.SEL // addItem:
 	separatorItem               darwin.SEL
 	setSubmenu                  darwin.SEL // setSubmenu:
@@ -149,6 +150,7 @@ func initDarwinSels() {
 			"initWithTitle:action:keyEquivalent:")
 		darwinSels.setState = darwin.RegisterSelector("setState:")
 		darwinSels.setEnabled = darwin.RegisterSelector("setEnabled:")
+		darwinSels.setAutoenablesItems = darwin.RegisterSelector("setAutoenablesItems:")
 		darwinSels.performSelectorOnMainThread = darwin.RegisterSelector(
 			"performSelectorOnMainThread:withObject:waitUntilDone:")
 
@@ -528,6 +530,14 @@ func (t *darwinTray) buildNSMenu(title string, menu *Menu, counter *int) darwin.
 		return 0
 	}
 
+	// Turn off automatic menu item enabling so that the enabled state set via
+	// setEnabled: (from MenuItem.Disabled / SetDisabled) is respected. With
+	// autoenablesItems left at its default of YES, AppKit ignores setEnabled:
+	// and enables every item whose target responds to its action, which is
+	// true for all of our items.
+	// [nsMenu setAutoenablesItems:NO]
+	nsMenu.SendBool(darwinSels.setAutoenablesItems, false)
+
 	menuClickedSel := darwin.RegisterSelector("menuItemClicked:")
 
 	for _, item := range menu.Items {
@@ -555,6 +565,9 @@ func (t *darwinTray) buildNSMenu(title string, menu *Menu, counter *int) darwin.
 			if !subMenu.IsNil() {
 				nsItem.SendPtr(darwinSels.setSubmenu, subMenu.Ptr())
 			}
+
+			// Apply the initial enabled state.
+			nsItem.SendBool(darwinSels.setEnabled, !snapshot.disabled)
 
 			nsMenu.SendPtr(darwinSels.addItem, nsItem.Ptr())
 
@@ -595,6 +608,9 @@ func (t *darwinTray) buildNSMenu(title string, menu *Menu, counter *int) darwin.
 			if snapshot.itemType == MenuItemCheckbox && snapshot.checked {
 				nsItem.SendInt(darwinSels.setState, 1)
 			}
+
+			// Apply the initial enabled state.
+			nsItem.SendBool(darwinSels.setEnabled, !snapshot.disabled)
 
 			// Set icon if provided.
 			if len(snapshot.icon) > 0 {
